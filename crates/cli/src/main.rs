@@ -37,7 +37,8 @@ fn run() -> Result<(), String> {
     let config = Config { proof: proof_path };
 
     match solver::solve(&model, &config) {
-        Ok(Outcome::Satisfiable) => {
+        // Come back to this to offer a solution instead of _
+        Ok(Outcome::Satisfiable(_)) => {
             println!("satisfiable");
             Ok(())
         }

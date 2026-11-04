@@ -2,25 +2,23 @@
 
 use std::path::PathBuf;
 
-/// A model built through the builder API
-#[derive(Debug, Default)]
-pub struct Model {}
+mod domain;
+mod model;
+mod store;
+mod trail;
 
-impl Model {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
+pub use model::{Constraint, Model, Solution, VarId};
 
+/// How to run the solver.
 #[derive(Debug, Default)]
 pub struct Config {
-    /// Write a VeriPB proof using this path
+    /// Write a VeriPB proof (and its OPB model) using this path stem, if set.
     pub proof: Option<PathBuf>,
 }
 
 #[derive(Debug)]
 pub enum Outcome {
-    Satisfiable,
+    Satisfiable(Solution),
     Unsatisfiable,
     Unknown,
 }
