@@ -1,8 +1,31 @@
 //! The domains of all variables, with every change trailed automatically.
 
 use crate::domain::{Conflict, SparseDomain};
+use crate::lit::Lit;
 use crate::model::{Model, VarId};
 use crate::trail::Trail;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Event {
+    /// A variable was fixed to a value.
+    Fix,
+    /// A value was removed from a variable's domain.
+    Domain,
+    /// A bound was tightened.
+    Bounds,
+}
+
+impl Event {
+    fn classify(bounds: (i64, i64), domain: &SparseDomain) -> Self {
+        if domain.size() == 1 {
+            Event::Fix
+        } else if domain.lower() != bounds.0 || domain.upper() != bounds.1 {
+            Event::Bounds
+        } else {
+            Event::Domain
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct DomainStore {
@@ -29,22 +52,32 @@ impl DomainStore {
         self.domains.len()
     }
 
-    pub(crate) fn remove(&mut self, var: VarId, val: i64) -> Result<bool, Conflict> {
+    pub(crate) fn remove(&mut self, var: VarId, val: i64) -> Result<Option<Event>, Conflict> {
         let d = &mut self.domains[var.index()];
         if !d.contains(val) {
-            return Ok(false); // no change, so nothing to trail
+            return Ok(None); // no change, so nothing to trail
         }
+        let bounds = (d.lower(), d.upper());
         self.trail.save(var, d.snapshot());
-        d.remove(val)
+        d.remove(val)?;
+        Ok(Some(Event::classify(bounds, d)))
     }
 
-    pub(crate) fn fix(&mut self, var: VarId, val: i64) -> Result<bool, Conflict> {
+    pub(crate) fn fix(&mut self, var: VarId, val: i64) -> Result<Option<Event>, Conflict> {
         let d = &mut self.domains[var.index()];
         if d.fixed_value() == Some(val) {
-            return Ok(false);
+            return Ok(None);
         }
         self.trail.save(var, d.snapshot());
-        d.fix(val)
+        d.fix(val)?;
+        Ok(Some(Event::Fix))
+    }
+
+    pub(crate) fn apply(&mut self, lit: Lit) -> Result<Option<Event>, Conflict> {
+        match lit {
+            Lit::Eq(var, val) => self.fix(var, val),
+            Lit::Neq(var, val) => self.remove(var, val),
+        }
     }
 
     pub(crate) fn level(&self) -> usize {
@@ -134,6 +167,8 @@ mod tests {
 
     #[test]
     fn changes_after_backtrack_belong_to_the_outer_level() {
+        // Two-way branching: after a backtrack, the `x != v` branch is
+        // asserted on the outer level and must be undone with it.
         let (mut s, v) = store(&[(0, 4), (0, 4)]);
         s.push_level(); //                   level 1
         s.remove(v[1], 0).unwrap();
