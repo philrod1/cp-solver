@@ -16,6 +16,9 @@ pub enum Constraint {
         x_offset: i64,
         y_offset: i64,
     },
+    AllDifferent {
+        terms: Vec<(VarId, i64)>,
+    },
 }
 
 /// A model built through the builder API
@@ -38,6 +41,18 @@ impl Model {
         id
     }
 
+    pub fn num_vars(&self) -> usize {
+        self.domains.len()
+    }
+
+    pub fn constraints(&self) -> &[Constraint] {
+        &self.constraints
+    }
+
+    pub fn domain(&self, var: VarId) -> (i64, i64) {
+        self.domains[var.index()]
+    }
+
     pub fn not_equal_offset(&mut self, x: VarId, x_offset: i64, y: VarId, y_offset: i64) {
         self.constraints.push(Constraint::NotEqual {
             x,
@@ -51,16 +66,16 @@ impl Model {
         self.not_equal_offset(x, 0, y, 0);
     }
 
-    pub fn num_vars(&self) -> usize {
-        self.domains.len()
+    pub fn all_different(&mut self, terms: &[VarId]) {
+        self.constraints.push(Constraint::AllDifferent {
+            terms: terms.iter().map(|&v| (v, 0)).collect(),
+        });
     }
 
-    pub fn constraints(&self) -> &[Constraint] {
-        &self.constraints
-    }
-
-    pub fn domain(&self, var: VarId) -> (i64, i64) {
-        self.domains[var.index()]
+    pub fn all_different_offset(&mut self, terms: &[(VarId, i64)]) {
+        self.constraints.push(Constraint::AllDifferent {
+            terms: terms.to_vec(),
+        });
     }
 }
 

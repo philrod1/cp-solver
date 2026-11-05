@@ -1,6 +1,7 @@
 //! The `Propagator` trait, the context propagators work through
 //! Mapping from constraints to propagators.
 
+mod all_different;
 mod not_equal;
 
 use crate::domain::{Conflict, SparseDomain};
@@ -10,6 +11,7 @@ use crate::model::{Constraint, VarId};
 use crate::proof::{Justification, ProofLogger};
 use crate::store::{DomainStore, Event};
 
+use all_different::AllDifferent;
 use not_equal::NotEqual;
 
 pub(crate) trait Propagator {
@@ -64,5 +66,8 @@ pub(crate) fn post(constraint: &Constraint, engine: &mut Engine) {
             y,
             y_offset,
         } => engine.add(Box::new(NotEqual::new(x, x_offset, y, y_offset))),
+        Constraint::AllDifferent { ref terms } => {
+            engine.add(Box::new(AllDifferent::new(terms.clone())))
+        }
     }
 }
