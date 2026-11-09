@@ -7,12 +7,12 @@ use crate::trail::Trail;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Event {
-    /// A variable was fixed to a value.
-    Fix,
-    /// A value was removed from a variable's domain.
+    /// A value was removed but the bounds didn't change.
     Domain,
     /// A bound was tightened.
     Bounds,
+    /// A variable was fixed to a value.
+    Fix,
 }
 
 impl Event {
@@ -73,10 +73,36 @@ impl DomainStore {
         Ok(Some(Event::Fix))
     }
 
+    /// Remove every value of `var` below `k`. `Ok(None)` if there were none.
+    pub(crate) fn set_lower(&mut self, var: VarId, k: i64) -> Result<Option<Event>, Conflict> {
+        let d = &mut self.domains[var.index()];
+        if k <= d.lower() {
+            return Ok(None);
+        }
+        let bounds = (d.lower(), d.upper());
+        self.trail.save(var, d.snapshot());
+        d.set_lower(k)?;
+        Ok(Some(Event::classify(bounds, d)))
+    }
+
+    /// Remove every value of `var` above `k`. `Ok(None)` if there were none.
+    pub(crate) fn set_upper(&mut self, var: VarId, k: i64) -> Result<Option<Event>, Conflict> {
+        let d = &mut self.domains[var.index()];
+        if k >= d.upper() {
+            return Ok(None);
+        }
+        let bounds = (d.lower(), d.upper());
+        self.trail.save(var, d.snapshot());
+        d.set_upper(k)?;
+        Ok(Some(Event::classify(bounds, d)))
+    }
+
     pub(crate) fn apply(&mut self, lit: Lit) -> Result<Option<Event>, Conflict> {
         match lit {
             Lit::Eq(var, val) => self.fix(var, val),
             Lit::Neq(var, val) => self.remove(var, val),
+            Lit::Ge(var, val) => self.set_lower(var, val),
+            Lit::Lt(var, val) => self.set_upper(var, val - 1),
         }
     }
 

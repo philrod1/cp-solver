@@ -1,20 +1,42 @@
-use super::{PropagationContext, Propagator};
+use super::{Constraint, PropagationContext, Propagator};
 use crate::domain::Conflict;
+use crate::engine::Engine;
 use crate::model::VarId;
 use crate::proof::Justification;
 use crate::store::Event;
 
+#[derive(Clone, Debug)]
 pub struct AllDifferent {
     terms: Vec<(VarId, i64)>,
 }
 
 impl AllDifferent {
-    pub fn new(terms: Vec<(VarId, i64)>) -> Self {
-        Self { terms }
+    pub fn new(terms: &[VarId]) -> Self {
+        Self {
+            terms: terms.iter().map(|&v| (v, 0)).collect(),
+        }
+    }
+
+    pub fn with_offsets(terms: &[(VarId, i64)]) -> Self {
+        Self {
+            terms: terms.to_vec(),
+        }
     }
 }
 
-impl Propagator for AllDifferent {
+impl Constraint for AllDifferent {
+    fn post(&self, engine: &mut Engine) {
+        engine.add(Box::new(Prop {
+            terms: self.terms.clone(),
+        }));
+    }
+}
+
+struct Prop {
+    terms: Vec<(VarId, i64)>,
+}
+
+impl Propagator for Prop {
     fn name(&self) -> &'static str {
         "all_different"
     }
@@ -42,34 +64,17 @@ impl Propagator for AllDifferent {
 
 #[cfg(test)]
 mod tests {
+    use super::AllDifferent;
+    use crate::constraints::testing::{propagate, values};
     use crate::domain::Conflict;
-    use crate::engine::Engine;
-    use crate::model::{Model, VarId};
-    use crate::proof::NullLogger;
-    use crate::propagators::post;
-    use crate::store::DomainStore;
-    use std::collections::BTreeSet;
-
-    fn propagate(model: &Model) -> (DomainStore, Result<(), Conflict>) {
-        let mut store = DomainStore::new(model);
-        let mut engine = Engine::new(model.num_vars());
-        for c in model.constraints() {
-            post(c, &mut engine);
-        }
-        let result = engine.propagate(&mut store, &mut NullLogger);
-        (store, result)
-    }
-
-    fn values(s: &DomainStore, v: VarId) -> BTreeSet<i64> {
-        s.domain(v).iter().collect()
-    }
+    use crate::model::Model;
 
     #[test]
     fn fixed_value_is_removed_from_all_others() {
         let mut m = Model::new();
         let x = m.int_var(2, 2);
         let others: Vec<_> = (0..3).map(|_| m.int_var(0, 4)).collect();
-        m.all_different(&[x, others[0], others[1], others[2]]);
+        m.post(AllDifferent::new(&[x, others[0], others[1], others[2]]));
         let (s, r) = propagate(&m);
         assert_eq!(r, Ok(()));
         for &v in &others {
@@ -82,7 +87,7 @@ mod tests {
         // x + 0 = 3, so y + 2 != 3 means y != 1.
         let mut m = Model::new();
         let (x, y) = (m.int_var(3, 3), m.int_var(0, 3));
-        m.all_different_offset(&[(x, 0), (y, 2)]);
+        m.post(AllDifferent::with_offsets(&[(x, 0), (y, 2)]));
         let (s, _) = propagate(&m);
         assert_eq!(values(&s, y), [0, 2, 3].into());
     }
@@ -92,7 +97,7 @@ mod tests {
         // x = 0 leaves y = 1, which leaves z = 2.
         let mut m = Model::new();
         let (x, y, z) = (m.int_var(0, 0), m.int_var(0, 1), m.int_var(0, 2));
-        m.all_different(&[x, y, z]);
+        m.post(AllDifferent::new(&[x, y, z]));
         let (s, r) = propagate(&m);
         assert_eq!(r, Ok(()));
         assert_eq!(s.domain(y).fixed_value(), Some(1));
@@ -103,7 +108,7 @@ mod tests {
     fn two_equal_fixed_values_conflict() {
         let mut m = Model::new();
         let (x, y, z) = (m.int_var(1, 1), m.int_var(0, 5), m.int_var(1, 1));
-        m.all_different(&[x, y, z]);
+        m.post(AllDifferent::new(&[x, y, z]));
         assert_eq!(propagate(&m).1, Err(Conflict));
     }
 
@@ -111,7 +116,7 @@ mod tests {
     fn repeated_variable_with_equal_offsets_conflicts_once_fixed() {
         let mut m = Model::new();
         let x = m.int_var(4, 4);
-        m.all_different(&[x, x]);
+        m.post(AllDifferent::new(&[x, x]));
         assert_eq!(propagate(&m).1, Err(Conflict));
     }
 
@@ -123,7 +128,7 @@ mod tests {
         // does, flip this assertion.
         let mut m = Model::new();
         let v: Vec<_> = (0..3).map(|_| m.int_var(0, 1)).collect();
-        m.all_different(&v);
+        m.post(AllDifferent::new(&v));
         assert_eq!(propagate(&m).1, Ok(()));
     }
 }

@@ -46,6 +46,7 @@ pub(crate) fn search(
                 let values: Vec<i64> = all_vars(store)
                     .map(|var| store.domain(var).fixed_value().expect("all fixed"))
                     .collect();
+                proof.solution(&values);
                 return Outcome::Satisfiable(Solution { values });
             };
             let decision = Lit::Eq(var, store.domain(var).lower());
@@ -67,8 +68,7 @@ pub(crate) fn search(
             store.backtrack();
             match store.apply(decision.negated()) {
                 Ok(Some(event)) => {
-                    let (Lit::Eq(var, _) | Lit::Neq(var, _)) = decision;
-                    engine.notify(var, event);
+                    engine.notify(decision.var(), event);
                     break;
                 }
                 Ok(None) => break,
@@ -80,7 +80,7 @@ pub(crate) fn search(
 
 #[cfg(test)]
 mod tests {
-    use crate::{solve, Config, Model, Outcome, VarOrder};
+    use crate::{solve, Config, Model, NotEqual, Outcome, VarOrder};
 
     #[test]
     fn pigeonhole_is_unsatisfiable() {
@@ -88,9 +88,9 @@ mod tests {
         for var_order in [VarOrder::InputOrder, VarOrder::SmallestDomain] {
             let mut m = Model::new();
             let v: Vec<_> = (0..3).map(|_| m.int_var(0, 1)).collect();
-            m.not_equal(v[0], v[1]);
-            m.not_equal(v[0], v[2]);
-            m.not_equal(v[1], v[2]);
+            m.post(NotEqual::new(v[0], v[1]));
+            m.post(NotEqual::new(v[0], v[2]));
+            m.post(NotEqual::new(v[1], v[2]));
             let config = Config {
                 var_order,
                 ..Config::default()
@@ -107,10 +107,10 @@ mod tests {
         // A permutation of 1..=3 with x > 1 and z != y + 1.
         let mut m = Model::new();
         let (x, y, z) = (m.int_var(2, 3), m.int_var(1, 3), m.int_var(1, 3));
-        m.not_equal(x, y);
-        m.not_equal(x, z);
-        m.not_equal(y, z);
-        m.not_equal_offset(y, 1, z, 0);
+        m.post(NotEqual::new(x, y));
+        m.post(NotEqual::new(x, z));
+        m.post(NotEqual::new(y, z));
+        m.post(NotEqual::with_offsets(y, 1, z, 0));
         let Outcome::Satisfiable(sol) = solve(&m, &Config::default()).unwrap() else {
             panic!("expected a solution");
         };

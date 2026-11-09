@@ -1,12 +1,12 @@
-//! Propagate to a fixpoint: wake the propagators watching each changed
+//! Propagation to a fixpoint.  Wake the propagators watching each changed
 //! variable, run them, repeat until nothing changes or there is a conflict.
 
 use std::collections::VecDeque;
 
+use crate::constraints::{PropagationContext, Propagator};
 use crate::domain::Conflict;
 use crate::model::VarId;
 use crate::proof::ProofLogger;
-use crate::propagators::{PropagationContext, Propagator};
 use crate::store::{DomainStore, Event};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -18,12 +18,14 @@ impl PropId {
     }
 }
 
-pub(crate) struct Engine {
+/// Public only so `Constraint::post` can mention it. It lives in a private
+/// module with crate-only methods, so code outside the crate can neither
+/// name it nor use it.
+pub struct Engine {
     props: Vec<Box<dyn Propagator>>,
     watches: Vec<Vec<(PropId, Event)>>,
     queue: VecDeque<PropId>,
     queued: Vec<bool>,
-    /// Changes made by the current propagator
     changed: Vec<(VarId, Event)>,
 }
 
@@ -49,7 +51,7 @@ impl Engine {
         self.enqueue(id);
     }
 
-    /// Tell the engine about a decision made outside of propagation
+    /// Tell the engine about a decision made outside propagation
     pub(crate) fn notify(&mut self, var: VarId, event: Event) {
         for i in 0..self.watches[var.index()].len() {
             let (id, wanted) = self.watches[var.index()][i];
@@ -73,7 +75,6 @@ impl Engine {
             };
             // Disjoint fields: the propagator and `changed` are borrowed
             // separately, which is why `changed` lives outside the context.
-            // Thanks, Claude.
             let result = self.props[id.index()].propagate(&mut ctx);
 
             if let Err(conflict) = result {
@@ -97,7 +98,7 @@ impl Engine {
         }
     }
 
-    /// Forget pending work after a conflict.
+    /// Forget pending work
     fn clear(&mut self) {
         for id in self.queue.drain(..) {
             self.queued[id.index()] = false;

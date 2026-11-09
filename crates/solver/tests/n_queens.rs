@@ -1,7 +1,4 @@
-//! N-Queens: one variable per row giving the queen's column, with three
-//! families of `!=` constraints (columns and diagonals).
-
-use solver::{Config, Model, Outcome, Solution, VarId};
+use solver::{AllDifferent, Config, Model, NotEqual, Outcome, Solution, VarId};
 
 /// Build the model: `q[i]` is the column of the queen in row `i`.
 fn nqueens(n: usize) -> (Model, Vec<VarId>) {
@@ -11,9 +8,9 @@ fn nqueens(n: usize) -> (Model, Vec<VarId>) {
     for i in 0..n {
         for j in i + 1..n {
             let (di, dj) = (i as i64, j as i64);
-            model.not_equal(q[i], q[j]); //                    different columns
-            model.not_equal_offset(q[i], di, q[j], dj); //     different / diagonals
-            model.not_equal_offset(q[i], -di, q[j], -dj); //   different \ diagonals
+            model.post(NotEqual::new(q[i], q[j])); // columns
+            model.post(NotEqual::with_offsets(q[i], di, q[j], dj)); // / diagonals
+            model.post(NotEqual::with_offsets(q[i], -di, q[j], -dj)); // \ diagonals
         }
     }
     (model, q)
@@ -47,7 +44,7 @@ fn columns(solution: &Solution, q: &[VarId]) -> Vec<i64> {
     q.iter().map(|&v| solution.value(v)).collect()
 }
 
-// The checker
+// --- The checker itself, so we can trust it ---------------------------------
 
 #[test]
 fn checker_accepts_known_solutions() {
@@ -72,7 +69,7 @@ fn model_has_expected_size() {
     assert_eq!(model.constraints().len(), 3 * 8 * 7 / 2);
 }
 
-// The solver
+// --- The solver -------------------------------------------------------------
 
 #[test]
 fn finds_valid_solutions() {
@@ -94,6 +91,55 @@ fn finds_valid_solutions() {
 fn proves_no_solution_for_2_and_3() {
     for n in [2, 3] {
         let (outcome, _) = solve(n);
+        assert!(
+            matches!(outcome, Outcome::Unsatisfiable),
+            "n={n}: expected UNSATISFIABLE, got {outcome:?}"
+        );
+    }
+}
+
+// --- The same problem with three all-different constraints ------------------
+
+/// Columns, `/` diagonals and `\` diagonals each all different.
+fn nqueens_alldiff(n: usize) -> (Model, Vec<VarId>) {
+    let mut model = Model::new();
+    let q: Vec<VarId> = (0..n).map(|_| model.int_var(0, n as i64 - 1)).collect();
+
+    let columns: Vec<(VarId, i64)> = q.iter().map(|&v| (v, 0)).collect();
+    let diag_up: Vec<(VarId, i64)> = q.iter().enumerate().map(|(i, &v)| (v, i as i64)).collect();
+    let diag_down: Vec<(VarId, i64)> = q
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (v, -(i as i64)))
+        .collect();
+    model.post(AllDifferent::with_offsets(&columns));
+    model.post(AllDifferent::with_offsets(&diag_up));
+    model.post(AllDifferent::with_offsets(&diag_down));
+    (model, q)
+}
+
+#[test]
+fn alldiff_model_finds_valid_solutions() {
+    for n in [1, 4, 5, 6, 7, 8, 10, 12] {
+        let (model, q) = nqueens_alldiff(n);
+        match solver::solve(&model, &Config::default()).expect("solver I/O error") {
+            Outcome::Satisfiable(sol) => {
+                let cols = columns(&sol, &q);
+                assert!(
+                    is_valid_placement(&cols),
+                    "n={n}: invalid solution {cols:?}"
+                );
+            }
+            other => panic!("n={n}: expected a solution, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn alldiff_model_proves_no_solution_for_2_and_3() {
+    for n in [2, 3] {
+        let (model, _) = nqueens_alldiff(n);
+        let outcome = solver::solve(&model, &Config::default()).expect("solver I/O error");
         assert!(
             matches!(outcome, Outcome::Unsatisfiable),
             "n={n}: expected UNSATISFIABLE, got {outcome:?}"

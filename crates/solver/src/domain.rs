@@ -117,6 +117,70 @@ impl SparseDomain {
         Ok(true)
     }
 
+    /// Remove every value below `k`. `Ok(false)` if there were none,
+    /// `Err(Conflict)` if no value would be left.
+    pub fn set_lower(&mut self, k: i64) -> Result<bool, Conflict> {
+        if k <= self.lower {
+            return Ok(false);
+        }
+        if k > self.upper {
+            return Err(Conflict);
+        }
+        self.keep_range(k, self.upper);
+        Ok(true)
+    }
+
+    /// Remove every value above `k`. `Ok(false)` if there were none,
+    /// `Err(Conflict)` if no value would be left.
+    pub fn set_upper(&mut self, k: i64) -> Result<bool, Conflict> {
+        if k >= self.upper {
+            return Ok(false);
+        }
+        if k < self.lower {
+            return Err(Conflict);
+        }
+        self.keep_range(self.lower, k);
+        Ok(true)
+    }
+
+    /// Remove every value outside `lo..=hi`. The caller guarantees at least
+    /// one value survives: the bound that isn't moving is still in the domain.
+    fn keep_range(&mut self, lo: i64, hi: i64) {
+        // Values in the range being cut, present or not.
+        let cut = (lo - self.lower) + (self.upper - hi);
+        if cut < self.size as i64 {
+            // Few to cut: visit each candidate value.
+            for v in (self.lower..lo).chain(hi + 1..=self.upper) {
+                if self.contains(v) {
+                    let pos = self.position(v);
+                    self.swap(pos, self.size as usize - 1);
+                    self.size -= 1;
+                }
+            }
+        } else {
+            // Many to cut: scan the values still in the domain instead.
+            let mut i = 0;
+            while i < self.size as usize {
+                let v = self.dense[i] as i64 + self.offset;
+                if v < lo || v > hi {
+                    self.swap(i, self.size as usize - 1);
+                    self.size -= 1;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        // Both scans stop: `lo..=hi` still holds a value.
+        self.lower = lo;
+        while !self.contains(self.lower) {
+            self.lower += 1;
+        }
+        self.upper = hi;
+        while !self.contains(self.upper) {
+            self.upper -= 1;
+        }
+    }
+
     /// The state the trail needs to save.
     pub(crate) fn snapshot(&self) -> DomainState {
         DomainState {
@@ -226,5 +290,62 @@ mod tests {
         for v in -4..=4 {
             assert!(d.contains(v));
         }
+    }
+
+    #[test]
+    fn set_lower_and_upper_skip_holes() {
+        let mut d = SparseDomain::new(0, 9);
+        d.remove(4).unwrap();
+        d.remove(6).unwrap();
+        assert_eq!(d.set_lower(4), Ok(true)); //    4 is a hole, so lower is 5
+        assert_eq!(d.lower(), 5);
+        assert_eq!(d.set_upper(6), Ok(true)); //    6 is a hole, so upper is 5
+        assert_eq!(values(&d), [5].into());
+        assert_eq!(d.fixed_value(), Some(5));
+    }
+
+    #[test]
+    fn bounds_that_change_nothing() {
+        let mut d = SparseDomain::new(2, 8);
+        assert_eq!(d.set_lower(-5), Ok(false));
+        assert_eq!(d.set_lower(2), Ok(false));
+        assert_eq!(d.set_upper(8), Ok(false));
+        assert_eq!(d.set_upper(100), Ok(false));
+        assert_eq!(d.size(), 7);
+    }
+
+    #[test]
+    fn bounds_past_each_other_conflict() {
+        let mut d = SparseDomain::new(0, 5);
+        assert_eq!(d.set_lower(6), Err(Conflict));
+        assert_eq!(d.set_upper(-1), Err(Conflict));
+        d.set_lower(3).unwrap();
+        assert_eq!(d.set_upper(2), Err(Conflict));
+    }
+
+    #[test]
+    fn big_cut_uses_the_scan_and_still_restores() {
+        // 80 holes, so cutting 0..95 is more values than remain: scan path.
+        let mut d = SparseDomain::new(0, 99);
+        let before = d.snapshot();
+        for v in 10..90 {
+            d.remove(v).unwrap();
+        }
+        d.set_lower(95).unwrap();
+        assert_eq!(values(&d), (95..=99).collect());
+        d.restore(before);
+        assert_eq!(values(&d), (0..=99).collect());
+    }
+
+    #[test]
+    fn small_cut_uses_values_and_still_restores() {
+        let mut d = SparseDomain::new(-5, 5);
+        let before = d.snapshot();
+        d.set_lower(-3).unwrap();
+        d.set_upper(2).unwrap();
+        assert_eq!(values(&d), (-3..=2).collect());
+        assert_eq!((d.lower(), d.upper()), (-3, 2));
+        d.restore(before);
+        assert_eq!(values(&d), (-5..=5).collect());
     }
 }

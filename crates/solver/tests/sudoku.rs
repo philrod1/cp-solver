@@ -4,7 +4,7 @@
 //! Solutions are checked against the sudoku rules and the clues by an
 //! independent checker, and against the known unique solution.
 
-use solver::{Config, Model, Outcome, VarId, VarOrder};
+use solver::{AllDifferent, Config, Model, Outcome, VarId, VarOrder};
 
 /// Arto Inkala's "world's hardest sudoku" (2012). Value elimination alone
 /// solves almost nothing here, so search does the work.
@@ -48,9 +48,9 @@ fn sudoku(puzzle: &str) -> (Model, Vec<VarId>) {
         let block: Vec<VarId> = (0..9)
             .map(|j| cells[9 * (br + j / 3) + bc + j % 3])
             .collect();
-        model.all_different(&row);
-        model.all_different(&col);
-        model.all_different(&block);
+        model.post(AllDifferent::new(&row));
+        model.post(AllDifferent::new(&col));
+        model.post(AllDifferent::new(&block));
     }
     (model, cells)
 }

@@ -1,6 +1,7 @@
 //! Proof logging for the solver.  Only it isn't implemented yet.
 use crate::lit::Lit;
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Justification {
     Rup,
     // Explicit(Box<dyn FnOnce(&mut ProofWriter)>), // Write `pol` steps

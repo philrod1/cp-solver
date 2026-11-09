@@ -1,19 +1,18 @@
-//! Solver engine
-//!
 use std::io;
 use std::path::PathBuf;
 
+mod constraints;
 mod domain;
 mod engine;
 mod lit;
 mod model;
 mod proof;
-mod propagators;
 mod search;
 mod store;
 mod trail;
 
-pub use model::{Constraint, Model, Solution, VarId};
+pub use constraints::{AllDifferent, Cell, Constraint, Linear, NotEqual, Table};
+pub use model::{Model, Solution, VarId};
 
 use engine::Engine;
 use proof::NullLogger;
@@ -23,7 +22,9 @@ use store::DomainStore;
 /// Which variable to branch on next
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum VarOrder {
+    /// The first unfixed variable, in creation order.
     InputOrder,
+    /// The unfixed variable with the fewest values.
     #[default]
     SmallestDomain,
 }
@@ -37,7 +38,6 @@ impl VarOrder {
     }
 }
 
-/// How to run the solver.
 #[derive(Debug, Default)]
 pub struct Config {
     /// Write a VeriPB proof (and its OPB model) using this path stem, if set.
@@ -52,7 +52,6 @@ pub enum Outcome {
     Unknown,
 }
 
-/// Solve the given model with the given configuration. Returns an outcome.
 pub fn solve(model: &Model, config: &Config) -> io::Result<Outcome> {
     if config.proof.is_some() {
         return Err(io::Error::new(
@@ -64,7 +63,7 @@ pub fn solve(model: &Model, config: &Config) -> io::Result<Outcome> {
     let mut store = DomainStore::new(model);
     let mut engine = Engine::new(model.num_vars());
     for constraint in model.constraints() {
-        propagators::post(constraint, &mut engine);
+        constraint.post(&mut engine);
     }
     let mut selector = config.var_order.selector();
 
