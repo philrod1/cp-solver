@@ -1,23 +1,10 @@
-//! Modelling language front end
+//! Front ends that turn text into a solver `Model`.
+//!
+//! - [`sexpr`]: a generic s-expression parser.
+//! - [`scp`]: the `.scp` format used by the Glasgow Constraint Solver and the
+//!   verified CakePB-CP encoder.
 
-use std::fmt;
+pub mod scp;
+pub mod sexpr;
 
-use solver::Model;
-
-#[derive(Debug)]
-pub struct ParseError {
-    pub line: usize,
-    pub message: String,
-}
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "line {}: {}", self.line, self.message)
-    }
-}
-
-impl std::error::Error for ParseError {}
-
-pub fn parse(_source: &str) -> Result<Model, ParseError> {
-    Ok(Model::new())
-}
+pub use scp::{read_scp, ProbType, ScpError, ScpModel};

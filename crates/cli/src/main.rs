@@ -1,10 +1,12 @@
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::{env, fs};
 
-use solver::{Config, Outcome};
+use lang::{ProbType, ScpModel};
+use solver::{Config, Outcome, Solution};
 
-const USAGE: &str = "usage: cps <model-file> [--proof <path-stem>]";
+const USAGE: &str = "usage: cps <model.scp> [--proof <path-stem>]";
 
 fn main() -> ExitCode {
     match run() {
@@ -41,13 +43,39 @@ fn run() -> Result<(), String> {
     let source = fs::read_to_string(&model_path)
         .map_err(|e| format!("cannot read {}: {e}", model_path.display()))?;
 
-    let model = lang::parse(&source).map_err(|e| format!("{}: {e}", model_path.display()))?;
-    let outcome = solver::solve(&model, &config).map_err(|e| format!("solver error: {e}"))?;
+    let (model, scp) = lang::read_scp(&source).map_err(|e| format!("{}: {e}", model_path.display()))?;
+    let solver_error = |e| format!("solver error: {e}");
 
-    match outcome {
-        Outcome::Satisfiable(_) => println!("SATISFIABLE"),
-        Outcome::Unsatisfiable => println!("UNSATISFIABLE"),
-        Outcome::Unknown => println!("UNKNOWN"),
+    match scp.prob_type {
+        ProbType::Decide => match solver::solve(&model, &config).map_err(solver_error)? {
+            Outcome::Satisfiable(sol) => {
+                println!("SATISFIABLE");
+                print_solution(&scp, &sol);
+            }
+            Outcome::Unsatisfiable => println!("UNSATISFIABLE"),
+            Outcome::Unknown => println!("UNKNOWN"),
+        },
+        ProbType::Enumerate => {
+            let count = solver::enumerate(&model, &config, |sol| {
+                print_solution(&scp, sol);
+                ControlFlow::Continue(())
+            })
+            .map_err(solver_error)?;
+            println!("{count} solutions");
+        }
+        ProbType::Minimize(_) | ProbType::Maximize(_) => {
+            return Err("optimisation problems aren't supported yet".into());
+        }
     }
     Ok(())
+}
+
+/// One line per solution: `name=value`, in declaration order.
+fn print_solution(scp: &ScpModel, sol: &Solution) {
+    let parts: Vec<String> = scp
+        .variables
+        .iter()
+        .map(|(name, var)| format!("{name}={}", sol.value(*var)))
+        .collect();
+    println!("{}", parts.join(" "));
 }
