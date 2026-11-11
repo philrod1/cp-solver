@@ -1,12 +1,11 @@
 //! Writes the VeriPB output files OPB and PBP
 
-use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write as _};
 use std::path::{Path, PathBuf};
 
-use super::opb::{write_opb, Encoding};
+use super::opb::{eq_definition, write_opb, Atoms, Encoding};
 use super::pb::{write_lit, Ineq, PbLit};
 use super::{Conclusion, ProofLogger, Rule};
 use crate::lit::Lit;
@@ -18,12 +17,6 @@ pub(crate) struct VeriPb {
     out: BufWriter<File>,
     line: String,
     error: Option<io::Error>,
-}
-
-#[derive(Default)]
-struct Atoms {
-    ge: BTreeMap<i64, PbLit>,
-    eq: HashMap<i64, PbLit>,
 }
 
 pub(crate) fn with_extension(stem: &Path, ext: &str) -> PathBuf {
@@ -47,6 +40,19 @@ impl VeriPb {
         out.write_all(b"pseudo-Boolean proof version 3.0\n")?;
         let atoms = (0..model.num_vars()).map(|_| Atoms::default()).collect();
         Ok(VeriPb { enc, atoms, out, line: String::new(), error: None })
+    }
+
+    /// Take over the atoms the OPB defines. They need no `red` step, but
+    /// they do need their pins and links, like any other atom.
+    fn adopt_opb_atoms(&mut self) {
+        let opb_atoms = std::mem::take(&mut self.enc.atoms);
+        for (i, atoms) in opb_atoms.into_iter().enumerate() {
+            let x = VarId(i as u32);
+            for (v, atom) in atoms.ge {
+                self.place_ge(x, v, atom);
+            }
+            self.atoms[i].eq = atoms.eq;
+        }
     }
 
     fn emit(&mut self) {
@@ -134,6 +140,34 @@ impl VeriPb {
 
         self.atoms[x.index()].ge.insert(v, atom);
         atom
+    }
+
+    /// Pin and link a newly defined atom `x ≥ v`, and record it.
+    fn place_ge(&mut self, x: VarId, v: i64, atom: PbLit) {
+        let int = self.enc.int(x);
+        let label = int.label(&format!("ge{v}"));
+        let (lb, ub) = (int.label("lb"), int.label("ub"));
+        let (lo, hi) = (int.lo, int.hi);
+
+        if v <= lo {
+            self.emit_text(&format!("pol @{label}[f] @{lb} + s ;"));
+        }
+        if v > hi {
+            self.emit_text(&format!("pol @{label}[r] @{ub} + s ;"));
+        }
+
+        let atoms = &self.atoms[x.index()].ge;
+        let below = atoms.range(..v).next_back().map(|(&u, _)| u);
+        let above = atoms.range(v + 1..).next().map(|(&w, _)| w);
+        if let Some(u) = below {
+            let lu = self.enc.int(x).label(&format!("ge{u}"));
+            self.emit_text(&format!("pol @{label}[r] @{lu}[f] + s ;"));
+        }
+        if let Some(w) = above {
+            let lw = self.enc.int(x).label(&format!("ge{w}"));
+            self.emit_text(&format!("pol @{lw}[r] @{label}[f] + s ;"));
+        }
+        self.atoms[x.index()].ge.insert(v, atom);
     }
 
     // The atom x = v

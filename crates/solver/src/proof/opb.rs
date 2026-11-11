@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
 use super::pb::{ Ineq, Names, PbLit };
@@ -33,6 +34,21 @@ impl IntBits {
     pub(crate) fn label(&self, what: &str) -> String {
         format!("i[{}][{what}]", self.name)
     }
+
+    /// The definition of the atom `x >= v`, as two halves:
+    /// `[r]` atom => sum >= v, and `[f]` !atom => sum <= v - 1.
+    pub(crate) fn ge_definition(&self, v: i64, atom: PbLit) -> [Ineq; 2] {
+        let sum: Vec<_> = self.scaled(1).collect();
+        let v = i128::from(v);
+        [Ineq::ge(sum.clone(), v).implied_by(atom), Ineq::le(sum, v - 1).implied_by(!atom)]
+    }
+}
+
+/// The definition of the atom `x = v`
+/// from `ge` (x >= v) and `gt` (x >= v + 1), as two halves:
+/// `[r]` atom => ge && !gt, and `[f]` ge && !gt => atom.
+pub(crate) fn eq_definition(ge: PbLit, gt: PbLit, atom: PbLit) -> [Ineq; 2] {
+    [Ineq::ge(vec![(1, ge), (1, !gt)], 2).implied_by(atom), Ineq::clause([atom, !ge, gt])]
 }
 
 /// How many magnitude bits a domain needs, and whether it needs a sign bit
@@ -43,10 +59,17 @@ pub(crate) fn bit_widths(lo: i64, hi: i64) -> (u32, bool) {
     (u64::BITS - largest.leading_zeros(), lo < 0)
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct Atoms {
+    pub(crate) ge: BTreeMap<i64, PbLit>,
+    pub(crate) eq: HashMap<i64, PbLit>,
+}
+
 #[derive(Debug)]
 pub(crate) struct Encoding {
     pub(crate) names: Names,
     pub(crate) ints: Vec<IntBits>,
+    pub(crate) atoms: Vec<Atoms>,
 }
 
 impl Encoding {
@@ -59,7 +82,8 @@ impl Encoding {
                 IntBits::new(&mut names, model.var_name(var), lo, hi)
             })
             .collect();
-        Encoding { names, ints }
+        let atoms = (0..model.num_vars()).map(|_| Atoms::default()).collect();
+        Encoding { names, ints, atoms }
     }
 
     pub(crate) fn int(&self, var: VarId) -> &IntBits {
@@ -89,6 +113,12 @@ impl OpbEncoder<'_> {
         write!(self.out, "@c[{}][{role}] ", self.constraint_name).unwrap();
         ineq.write_to(&self.enc.names, self.out);
         self.out.push_str(" ;\n");
+    }
+
+    /// A fresh flag numbered by `index`, e.g. `x[name][0_2]`.
+    pub(crate) fn indexed_flag(&mut self, index: &[usize]) -> PbLit {
+        let index: Vec<String> = index.iter().map(|i| i.to_string()).collect();
+        PbLit::pos(self.enc.names.fresh(format!("x[{}][{}]", self.constraint_name, index.join("_"))))
     }
 }
 

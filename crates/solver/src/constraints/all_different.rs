@@ -3,7 +3,7 @@ use crate::domain::Conflict;
 use crate::engine::Engine;
 use crate::lit::Lit;
 use crate::model::VarId;
-use crate::proof::{Justification, Reason};
+use crate::proof::{Ineq, Justification, NotEncodable, OpbEncoder, Reason};
 use crate::store::Event;
 
 #[derive(Clone, Debug)]
@@ -30,6 +30,26 @@ impl Constraint for AllDifferent {
         engine.add(Box::new(Prop {
             terms: self.terms.clone(),
         }));
+    }
+
+    /// As GCS writes it: for each pair of terms `i < j`, a flag
+    /// `x[name][i_j]` choosing which is bigger.
+    ///
+    /// ```text
+    /// @c[name][{i}lt{j}]  !flag => (xi + ai) - (xj + aj) <= -1
+    /// @c[name][{i}gt{j}]   flag => (xi + ai) - (xj + aj) >= 1
+    /// ```
+    fn encode(&self, opb: &mut OpbEncoder<'_>) -> Result<(), NotEncodable> {
+        for (i, &(xi, ai)) in self.terms.iter().enumerate() {
+            for (j, &(xj, aj)) in self.terms.iter().enumerate().skip(i + 1) {
+                let flag = opb.indexed_flag(&[i, j]);
+                let diff = opb.linear(&[(1, xi), (-1, xj)]);
+                let shift = i128::from(aj) - i128::from(ai);
+                opb.row(&format!("{i}lt{j}"), &Ineq::le(diff.clone(), -1 + shift).implied_by(!flag));
+                opb.row(&format!("{i}gt{j}"), &Ineq::ge(diff, 1 + shift).implied_by(flag));
+            }
+        }
+        Ok(())
     }
 }
 

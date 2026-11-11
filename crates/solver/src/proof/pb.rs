@@ -17,6 +17,10 @@ impl PbLit {
     pub(crate) fn pos(var: PbVar) -> Self {
         PbLit { var, negated: false }
     }
+
+    pub(crate) fn var(self) -> PbVar {
+        self.var
+    }
 }
 
 impl std::ops::Not for PbLit {
@@ -106,6 +110,10 @@ impl Ineq {
             }
         }
         Ineq { terms, rhs: self.rhs - constant }
+    }
+
+    pub(crate) fn negated(&self) -> Ineq {
+        Ineq::le(self.terms.clone(), self.rhs -1)
     }
 
     /// Append in OPB syntax, without the final `;`

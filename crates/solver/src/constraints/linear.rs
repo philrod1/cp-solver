@@ -9,7 +9,7 @@ use super::{Constraint, PropagationContext, Propagator};
 use crate::domain::Conflict;
 use crate::engine::Engine;
 use crate::model::VarId;
-use crate::proof::{Justification, Reason};
+use crate::proof::{Ineq, Justification, NotEncodable, OpbEncoder, Reason};
 use crate::store::Event;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -88,6 +88,23 @@ impl Constraint for Linear {
             let negated = self.terms.iter().map(|&(x, a)| (x, -a)).collect();
             engine.add(Box::new(LessEqual::new(negated, -self.cof)));
         }
+    }
+
+    /// As GCS writes it, in its normalised form:
+    ///
+    /// ```text
+    /// @c[name][le]  sum ai xi <= cof
+    /// @c[name][ge]  sum ai x1 >= cof   (equalities only)
+    /// ```
+    fn encode(&self, opb: &mut OpbEncoder<'_>) -> Result<(), NotEncodable> {
+        let terms: Vec<(i64, VarId)> = self.terms.iter().map(|&(x, a)| (a, x)).collect();
+        let sum = opb.linear(&terms);
+        let cof = i128::from(self.cof);
+        opb.row("le", &Ineq::le(sum.clone(), cof));
+        if self.rel == Rel::Eq {
+            opb.row("ge", &Ineq::ge(sum, cof));
+        }
+        Ok(())
     }
 }
 
