@@ -1,3 +1,17 @@
+//! The OPB model a proof is checked against: every integer variable in
+//! binary, plus each constraint's rows.
+//!
+//! Names follow GCS, so these files can later go through the same
+//! `cake_pb_cp` chain:
+//!
+//! - bits `i[x][b0]`, `i[x][b1]`, ... and, for a domain with negative
+//!   values, a two's-complement sign bit `i[x][sign]`;
+//! - the declared bounds as rows `@i[x][lb]` and `@i[x][ub]`;
+//! - constraint rows `@c[name][role]`, and flags `b[name][role]`, or
+//!   `x[name][i]` / `x[name][i_j]` when they are numbered;
+//! - atoms `i[x][geV]` (x ≥ V) and `i[x][eqV]` (x = V), for constraints
+//!   whose rows need them, defined by rows `@i[x][geV][r]` and `[f]`.
+
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
@@ -115,10 +129,68 @@ impl OpbEncoder<'_> {
         self.out.push_str(" ;\n");
     }
 
+    /// The atom `x = v`, defined in the OPB the first time it is asked for.
+    pub(crate) fn eq(&mut self, x: VarId, v: i64) -> PbLit {
+        if let Some(&atom) = self.enc.atoms[x.index()].eq.get(&v) {
+            return atom;
+        }
+        let (ge, gt) = (self.ge(x, v), self.ge(x, v + 1));
+        let label = self.enc.int(x).label(&format!("eq{v}"));
+        let atom = PbLit::pos(self.enc.names.fresh(label.clone()));
+        let [r, f] = eq_definition(ge, gt, atom);
+        self.line(&format!("{label}[r]"), &r);
+        self.line(&format!("{label}[f]"), &f);
+        self.enc.atoms[x.index()].eq.insert(v, atom);
+        atom
+    }
+
+    /// The atom `x >= v`, defined in the OPB the first time it is asked for.
+    fn ge(&mut self, x: VarId, v: i64) -> PbLit {
+        if let Some(&atom) = self.enc.atoms[x.index()].ge.get(&v) {
+            return atom;
+        }
+        let label = self.enc.int(x).label(&format!("ge{v}"));
+        let atom = PbLit::pos(self.enc.names.fresh(label.clone()));
+        let [r, f] = self.enc.int(x).ge_definition(v, atom);
+        self.line(&format!("{label}[r]"), &r);
+        self.line(&format!("{label}[f]"), &f);
+        self.enc.atoms[x.index()].ge.insert(v, atom);
+        atom
+    }
+
     /// A fresh flag numbered by `index`, e.g. `x[name][0_2]`.
     pub(crate) fn indexed_flag(&mut self, index: &[usize]) -> PbLit {
         let index: Vec<String> = index.iter().map(|i| i.to_string()).collect();
         PbLit::pos(self.enc.names.fresh(format!("x[{}][{}]", self.constraint_name, index.join("_"))))
+    }
+
+    /// A fresh flag numbered by `index` that is true exactly when `ineq`
+    /// holds, defined by rows `@x[name][index][r]` (flag => ineq) and
+    /// `[f]` (!flag => !ineq).
+    pub(crate) fn reified_flag(&mut self, index: &[usize], ineq: Ineq) -> PbLit {
+        let flag = self.indexed_flag(index);
+        let name = self.enc.names.name(flag.var()).to_string();
+        self.line(&format!("{name}[r]"), &ineq.clone().implied_by(flag));
+        self.line(&format!("{name}[f]"), &ineq.negated().implied_by(!flag));
+        flag
+    }
+
+    /// `x`'s declared bounds.
+    pub(crate) fn declared(&self, x: VarId) -> (i64, i64) {
+        let int = self.enc.int(x);
+        (int.lo, int.hi)
+    }
+
+    /// Write a row with no label.
+    pub(crate) fn unlabelled(&mut self, ineq: &Ineq) {
+        ineq.write_to(&self.enc.names, self.out);
+        self.out.push_str(" ;\n");
+    }
+
+    /// Write `@label ineq ;`.
+    fn line(&mut self, label: &str, ineq: &Ineq) {
+        write!(self.out, "@{label} ").unwrap();
+        self.unlabelled(ineq);
     }
 }
 

@@ -4,7 +4,7 @@ use super::{Constraint, PropagationContext, Propagator};
 use crate::domain::Conflict;
 use crate::engine::Engine;
 use crate::model::VarId;
-use crate::proof::{Justification, Reason};
+use crate::proof::{Ineq, Justification, NotEncodable, OpbEncoder, Reason};
 use crate::store::Event;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -84,6 +84,61 @@ impl Constraint for Table {
             vars: self.vars.clone(),
             rows: self.rows.clone(),
         }));
+    }
+
+    /// As GCS writes it: a flag `x[name][k]` for each row, true exactly
+    /// when row `k` matches, and at least one of them true.
+    ///
+    /// ```text
+    /// @x[name][k][r]   flag => x0 = v0 && x1 = v1 && ...
+    /// @x[name][k][f]  !flag => !(x0 = v0 && x1 = v1 && ...)
+    /// @c[name][al1]   some flag
+    /// ```
+    ///
+    /// Each `x = v` is an atom the OPB defines, so that the proof can see
+    /// a row ruled out as soon as one of its values is. Wildcards add
+    /// nothing, and nor does a value a fixed variable always has. A value
+    /// outside its variable's declared domain means the row never matches,
+    /// so its flag is simply false.
+    fn encode(&self, opb: &mut OpbEncoder<'_>) -> Result<(), NotEncodable> {
+        let mut flags = Vec::new();
+        for (k, row) in self.rows.iter().enumerate() {
+            // A repeated variable has the same cell everywhere (see
+            // `merge_repeats`), so only its first position counts.
+            let cells: Vec<(VarId, i64)> = self
+                .vars
+                .iter()
+                .zip(row)
+                .enumerate()
+                .filter(|&(i, (x, _))| !self.vars[..i].contains(x))
+                .filter_map(|(_, (&x, &cell))| match cell {
+                    Cell::Val(v) => Some((x, v)),
+                    Cell::Any => None,
+                })
+                .collect();
+            let possible = cells.iter().all(|&(x, v)| {
+                let (lo, hi) = opb.declared(x);
+                (lo..=hi).contains(&v)
+            });
+            let flag = if possible {
+                let mut lits = Vec::new();
+                for &(x, v) in &cells {
+                    let (lo, hi) = opb.declared(x);
+                    if lo < hi {
+                        lits.push((1, opb.eq(x, v)));
+                    }
+                }
+                let n = lits.len() as i128;
+                opb.reified_flag(&[k], Ineq::ge(lits, n))
+            } else {
+                let flag = opb.indexed_flag(&[k]);
+                opb.unlabelled(&Ineq::clause([!flag]));
+                flag
+            };
+            flags.push(flag);
+        }
+        opb.row("al1", &Ineq::clause(flags));
+        Ok(())
     }
 }
 

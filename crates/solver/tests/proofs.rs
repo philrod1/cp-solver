@@ -13,7 +13,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use proptest::prelude::*;
-use solver::{enumerate, solve, AllDifferent, Config, Model, NotEqual, Outcome, VarId, VarOrder};
+use solver::{enumerate, solve, Cell, Config, Model, NotEqual, Outcome, Table, VarId, VarOrder};
 
 /// The VeriPB command, if there is one.
 fn veripb() -> Option<&'static str> {
@@ -168,10 +168,10 @@ fn an_empty_domain() {
 fn constraints_without_an_encoding_are_refused() {
     let mut m = Model::new();
     let v: Vec<VarId> = (0..3).map(|_| m.int_var(0, 2)).collect();
-    m.post_named("alldiff", AllDifferent::new(&v)).unwrap();
+    m.post_named("t", Table::new(&v, &[vec![Cell::Val(0), Cell::Val(1), Cell::Val(2)]])).unwrap();
     let err = solve(&m, &config("refused")).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
-    assert!(err.to_string().contains("alldiff"), "{err}");
+    assert!(err.to_string().contains("'t'"), "{err}");
 }
 
 // ---- random models, against brute force ----

@@ -39,7 +39,9 @@ impl VeriPb {
         let mut out = BufWriter::new(File::create(with_extension(stem, "pbp"))?);
         out.write_all(b"pseudo-Boolean proof version 3.0\n")?;
         let atoms = (0..model.num_vars()).map(|_| Atoms::default()).collect();
-        Ok(VeriPb { enc, atoms, out, line: String::new(), error: None })
+        let mut proof = VeriPb { enc, atoms, out, line: String::new(), error: None };
+        proof.adopt_opb_atoms();
+        Ok(proof)
     }
 
     /// Take over the atoms the OPB defines. They need no `red` step, but
@@ -103,42 +105,13 @@ impl VeriPb {
         if let Some(&atom) = self.atoms[x.index()].ge.get(&v) {
             return atom;
         }
-        let int = self.enc.int(x);
-        let label = int.label(&format!("ge{v}"));
-        let (lb, ub) = (int.label("lb"), int.label("ub"));
-        let sum: Vec<_> = int.scaled(1).collect();
-        let (hi, lo) = (int.hi, int.lo);
+        let label = self.enc.int(x).label(&format!("ge{v}"));
         let atom = PbLit::pos(self.enc.names.fresh(label.clone()));
-        let v128 = i128::from(v);
-
-        // atom implies sum >= v
-        let r = Ineq::ge(sum.clone(), v128).implied_by(atom);
+        // [r] is true when the atom is false, [f] when it is true.
+        let [r, f] = self.enc.int(x).ge_definition(v, atom);
         self.emit_red(&format!("{label}[r]"), &r, atom, false);
-        // atom implies sum <= v - 1
-        let f = Ineq::le(sum, v128 - 1).implied_by(!atom);
         self.emit_red(&format!("{label}[f]"), &f, atom, true);
-
-        if v <= lo {
-            self.emit_text(&format!("pol @{label}[f] @{lb} + s ;"));
-        }
-        if v > hi {
-            self.emit_text(&format!("pol @{label}[r] @{ub} + s ;"));
-        }
-
-        let atoms = &self.atoms[x.index()].ge;
-        let above = atoms.range(v + 1..).next().map(|(&w, _)| w);
-        let below = atoms.range(..v).next_back().map(|(&u, _)| u);
-        let int = self.enc.int(x);
-        if let Some(u) = below {
-            let lu = int.label(&format!("ge{u}"));
-            self.emit_text(&format!("pol @{label}[r] @{lu}[f] + s ;"));
-        }
-        if let Some(w) = above {
-            let lw = self.enc.int(x).label(&format!("ge{w}"));
-            self.emit_text(&format!("pol @{lw}[r] @{label}[f] + s ;"));
-        }
-
-        self.atoms[x.index()].ge.insert(v, atom);
+        self.place_ge(x, v, atom);
         atom
     }
 
@@ -178,12 +151,8 @@ impl VeriPb {
         let (ge, gt) = (self.ge(x, v), self.ge(x, v + 1));
         let label = self.enc.int(x).label(&format!("eq{v}"));
         let atom = PbLit::pos(self.enc.names.fresh(label.clone()));
-
-        // atom implies x >= v && !(x >= v + 1)
-        let r = Ineq::ge(vec![(1, ge), (1, !gt)], 2).implied_by(atom);
+        let [r, f] = eq_definition(ge, gt, atom);
         self.emit_red(&format!("{label}[r]"), &r, atom, false);
-        // x >= v && !(x >= v + 1) implies atom
-        let f = Ineq::clause([atom, !ge, gt]);
         self.emit_red(&format!("{label}[f]"), &f, atom, true);
         self.atoms[x.index()].eq.insert(v, atom);
         atom
