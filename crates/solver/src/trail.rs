@@ -37,6 +37,7 @@ impl Trail {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn level(&self) -> usize {
         self.levels.len()
     }

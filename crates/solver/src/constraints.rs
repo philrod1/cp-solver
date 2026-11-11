@@ -59,7 +59,6 @@ pub(crate) struct PropagationContext<'a> {
 }
 
 impl PropagationContext<'_> {
-    #[allow(dead_code)] // first user will be a bounds propagator
     pub(crate) fn domain(&self, var: VarId) -> &SparseDomain {
         self.store.domain(var)
     }

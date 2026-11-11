@@ -12,7 +12,7 @@ pub(crate) struct IntBits {
 }
 
 impl IntBits {
-    fn new(names: &mut Names, name: String, hi: i64, lo: i64) -> Self {
+    fn new(names: &mut Names, name: String, lo: i64, hi: i64) -> Self {
         let (mag_bits, signed) = bit_widths(lo, hi);
         let mut bits = Vec::new();
         if signed {
@@ -23,7 +23,7 @@ impl IntBits {
             let bit = names.fresh(format!("i[{name}][b{b}]"));
             bits.push(((1i128 << b), PbLit::pos(bit)));
         }
-        IntBits{ name, bits, hi, lo }
+        IntBits{ name, bits, lo, hi }
     }
 
     pub(crate) fn scaled(&self, coeff: i128) -> impl Iterator<Item = (i128, PbLit)> + '_ {
@@ -56,7 +56,7 @@ impl Encoding {
             .map(|i| {
                 let var = VarId(i as u32);
                 let (lo, hi) = model.domains[i];
-                IntBits::new(&mut names, model.var_name(var), hi, lo)
+                IntBits::new(&mut names, model.var_name(var), lo, hi)
             })
             .collect();
         Encoding { names, ints }
