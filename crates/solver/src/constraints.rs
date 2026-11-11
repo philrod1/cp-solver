@@ -20,7 +20,7 @@ use crate::domain::{Conflict, SparseDomain};
 use crate::engine::Engine;
 use crate::lit::Lit;
 use crate::model::VarId;
-use crate::proof::{Justification, ProofLogger};
+use crate::proof::{Justification, NotEncodable, OpbEncoder, ProofLogger, Reason};
 use crate::store::{DomainStore, Event};
 
 /// A constraint as stated in a model.
@@ -30,6 +30,12 @@ use crate::store::{DomainStore, Event};
 pub trait Constraint: Debug + Send {
     /// Add the propagators that enforce this constraint.
     fn post(&self, engine: &mut Engine);
+
+    /// Write the pseudo-Boolean rows that define this constraint for the
+    /// OPB model a proof is checked against.
+    fn encode(&self, _opb: &mut OpbEncoder<'_>) -> Result<(), NotEncodable> {
+        Err(NotEncodable)
+    }
 }
 
 /// Runtime enforcement of a constraint during search.
@@ -63,45 +69,78 @@ impl PropagationContext<'_> {
     }
 
     /// Infer `var != val`.
-    pub(crate) fn remove(
-        &mut self,
-        var: VarId,
-        val: i64,
-        why: Justification,
-    ) -> Result<(), Conflict> {
-        if let Some(event) = self.store.remove(var, val)? {
-            self.proof.inference(Lit::Neq(var, val), why);
-            self.changed.push((var, event));
+    pub(crate) fn remove(&mut self, var: VarId, val: i64, why: Justification) -> Result<(), Conflict> {
+        if !self.domain(var).contains(val) {
+            return Ok(());
         }
+        self.log(Some(Lit::Neq(var, val)), why);
+        let event = self.store.remove(var, val)?;
+        self.changed(var, event);
         Ok(())
     }
 
     /// Infer `var >= k`.
-    pub(crate) fn set_lower(
-        &mut self,
-        var: VarId,
-        k: i64,
-        why: Justification,
-    ) -> Result<(), Conflict> {
-        if let Some(event) = self.store.set_lower(var, k)? {
-            self.proof.inference(Lit::Ge(var, k), why);
-            self.changed.push((var, event));
+    pub(crate) fn set_lower(&mut self, var: VarId, k: i64, why: Justification) -> Result<(), Conflict> {
+        if k <= self.domain(var).lower() {
+            return Ok(());
         }
+        self.log(Some(Lit::Ge(var, k)), why);
+        let event = self.store.set_lower(var, k)?;
+        self.changed(var, event);
         Ok(())
     }
 
     /// Infer `var <= k`.
-    pub(crate) fn set_upper(
-        &mut self,
-        var: VarId,
-        k: i64,
-        why: Justification,
-    ) -> Result<(), Conflict> {
-        if let Some(event) = self.store.set_upper(var, k)? {
-            self.proof.inference(Lit::Lt(var, k + 1), why);
+    pub(crate) fn set_upper(&mut self, var: VarId, k: i64, why: Justification) -> Result<(), Conflict> {
+        if k >= self.domain(var).upper() {
+            return Ok(());
+        }
+        self.log(Some(Lit::Lt(var, k + 1)), why);
+        let event = self.store.set_upper(var, k)?;
+        self.changed(var, event);
+        Ok(())
+    }
+
+    /// The constraint can't be satisfied, given `why`'s reason.
+    pub(crate) fn fail(&mut self, why: Justification) -> Result<(), Conflict> {
+        self.log(None, why);
+        Err(Conflict)
+    }
+
+    fn changed(&mut self, var: VarId, event: Option<Event>) {
+        if let Some(event) = event {
             self.changed.push((var, event));
         }
-        Ok(())
+    }
+
+    /// Log "reason => lit", or with no `lit` "not reason". Called before
+    /// the change is made, so the reason describes the domains it used.
+    fn log(&mut self, lit: Option<Lit>, why: Justification) {
+        if !self.proof.is_logging() {
+            return;
+        }
+        let reason = self.reason_lits(why.reason());
+        match lit {
+            Some(lit) => self.proof.inference(lit, why.rule(), &reason),
+            None => self.proof.conflict(why.rule(), &reason),
+        }
+    }
+
+    fn reason_lits(&self, reason: Reason) -> Vec<Lit> {
+        match reason {
+            Reason::Lits(lits) => lits.to_vec(),
+            Reason::Domains(vars) => {
+                let mut lits = Vec::new();
+                for &x in vars {
+                    let d = self.domain(x);
+                    let (lo, hi) = (d.lower(), d.upper());
+                    lits.push(Lit::Ge(x, lo));
+                    lits.push(Lit::Lt(x, hi + 1));
+                    lits.extend((lo + 1..hi).filter(|&v| !d.contains(v)).map(|v| Lit::Neq(x, v)));
+                }
+                lits
+            }
+        }
     }
 }
 

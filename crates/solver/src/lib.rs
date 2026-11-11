@@ -18,7 +18,7 @@ pub use constraints::{AllDifferent, Cell, Constraint, Linear, NotEqual, Table};
 pub use model::{DuplicateName, Model, Solution, VarId};
 
 use engine::Engine;
-use proof::NullLogger;
+use proof::{Conclusion, NullLogger, ProofLogger, VeriPb};
 use search::{InputOrder, SearchEnd, SmallestDomain, VariableSelector};
 use store::DomainStore;
 
@@ -82,20 +82,21 @@ pub fn enumerate(
     Ok(count)
 }
 
-/// Set up and search. `None` means there was nothing to search: the model
-/// declares an empty domain.
+/// Set up and search. `None` means there was nothing to search
 fn run(
     model: &Model,
     config: &Config,
     on_solution: &mut dyn FnMut(&Solution) -> ControlFlow<()>,
 ) -> io::Result<Option<SearchEnd>> {
-    if config.proof.is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "proof logging is not implemented yet",
-        ));
-    }
-    if model.empty_domain {
+    let mut proof: Box<dyn ProofLogger> = match &config.proof {
+        Some(stem) => Box::new(VeriPb::create(model, stem)?),
+        None => Box::new(NullLogger),
+    };
+
+    if let Some(empty) = (0..model.num_vars()).position(|i| model.domains[i].0 > model.domains[i].1) {
+        proof.empty_domain(VarId(empty as u32));
+        proof.conclude(Conclusion::Unsatisfiable);
+        proof.finish()?;
         return Ok(None);
     }
 
@@ -106,11 +107,16 @@ fn run(
     }
     let mut selector = config.var_order.selector();
 
-    Ok(Some(search::search(
-        &mut store,
-        &mut engine,
-        selector.as_mut(),
-        &mut NullLogger,
-        on_solution,
-    )))
+    let mut count = 0;
+    let end = search::search(&mut store, &mut engine, selector.as_mut(), proof.as_mut(), &mut |solution| {
+        count += 1;
+        on_solution(solution)
+    });
+    proof.conclude(match end {
+        SearchEnd::Stopped(_) => Conclusion::Satisfiable,
+        SearchEnd::Exhausted if count == 0 => Conclusion::Unsatisfiable,
+        SearchEnd::Exhausted => Conclusion::Enumerated(count),
+    });
+    proof.finish()?;
+    Ok(Some(end))
 }

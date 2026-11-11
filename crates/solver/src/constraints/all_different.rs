@@ -1,8 +1,9 @@
 use super::{Constraint, PropagationContext, Propagator};
 use crate::domain::Conflict;
 use crate::engine::Engine;
+use crate::lit::Lit;
 use crate::model::VarId;
-use crate::proof::Justification;
+use crate::proof::{Justification, Reason};
 use crate::store::Event;
 
 #[derive(Clone, Debug)]
@@ -54,7 +55,8 @@ impl Propagator for Prop {
             let value = v + ai;
             for (j, &(xj, aj)) in self.terms.iter().enumerate() {
                 if j != i {
-                    ctx.remove(xj, value - aj, Justification::Rup)?;
+                    let why = Justification::Rup(Reason::Lits(&[Lit::Eq(xi, v)]));
+                    ctx.remove(xj, value - aj, why)?;
                 }
             }
         }

@@ -9,7 +9,7 @@ use super::{Constraint, PropagationContext, Propagator};
 use crate::domain::Conflict;
 use crate::engine::Engine;
 use crate::model::VarId;
-use crate::proof::Justification;
+use crate::proof::{Justification, Reason};
 use crate::store::Event;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -94,6 +94,8 @@ impl Constraint for Linear {
 /// Bounds propagation for `Σ aᵢxᵢ ≤ cof`
 struct LessEqual {
     terms: Vec<(VarId, i64)>,
+    /// The variables of `terms`, for reasons.
+    vars: Vec<VarId>,
     cof: i64,
     mins: Vec<i128>,
 }
@@ -101,7 +103,8 @@ struct LessEqual {
 impl LessEqual {
     fn new(terms: Vec<(VarId, i64)>, cof: i64) -> Self {
         let mins = vec![0; terms.len()];
-        Self { terms, cof, mins }
+        let vars = terms.iter().map(|&(x, _)| x).collect();
+        Self { terms, vars, cof, mins }
     }
 }
 
@@ -118,7 +121,7 @@ impl Propagator for LessEqual {
     }
 
     fn propagate(&mut self, ctx: &mut PropagationContext<'_>) -> Result<(), Conflict> {
-        // i128 throughout: aᵢ·boundᵢ can overflow i64.
+        // i128 throughout because we can overflow i64
         let mut min_sum: i128 = 0;
         for (min, &(x, a)) in self.mins.iter_mut().zip(&self.terms) {
             let d = ctx.domain(x);
@@ -126,15 +129,15 @@ impl Propagator for LessEqual {
             *min = i128::from(a) * i128::from(bound);
             min_sum += *min;
         }
+        let why = Justification::Unchecked(Reason::Domains(&self.vars));
         let cof = i128::from(self.cof);
         if min_sum > cof {
-            return Err(Conflict);
+            return ctx.fail(why);
         }
 
         // Under the direct encoding these need a `pol` derivation (sum the
         // constraint with the other variables' bounds), not plain RUP.
         // Unchecked until the proof writer can produce one.
-        let why = Justification::Unchecked;
         for (&min, &(x, a)) in self.mins.iter().zip(&self.terms) {
             let slack = cof - (min_sum - min); // the most aᵢxᵢ can be
             let a = i128::from(a);

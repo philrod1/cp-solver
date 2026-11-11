@@ -4,7 +4,7 @@ use super::{Constraint, PropagationContext, Propagator};
 use crate::domain::Conflict;
 use crate::engine::Engine;
 use crate::model::VarId;
-use crate::proof::Justification;
+use crate::proof::{Justification, Reason};
 use crate::store::Event;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -125,8 +125,11 @@ impl Propagator for Prop {
                 }
             }
         }
+        // Every row was ruled out by the current domains: RUP, with the
+        // rows' encoding.
+        let why = Justification::Rup(Reason::Domains(&self.vars));
         if !any_live {
-            return Err(Conflict);
+            return ctx.fail(why);
         }
 
         for (i, &x) in self.vars.iter().enumerate() {
@@ -136,7 +139,7 @@ impl Propagator for Prop {
             let values: Vec<i64> = ctx.domain(x).iter().collect();
             for v in values {
                 if !supported[i].contains(&v) {
-                    ctx.remove(x, v, Justification::Rup)?;
+                    ctx.remove(x, v, why)?;
                 }
             }
         }

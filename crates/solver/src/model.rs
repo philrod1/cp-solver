@@ -41,6 +41,8 @@ pub struct Model {
     constant_of: HashMap<VarId, i64>,
     /// Some variable was declared with `lo > hi`, so nothing can satisfy it.
     pub(crate) empty_domain: bool,
+
+    var_names: Vec<Option<String>>,
 }
 
 impl Model {
@@ -55,12 +57,28 @@ impl Model {
         let id = VarId(self.domains.len() as u32);
         if lo > hi {
             self.empty_domain = true;
-            // Any value will do: the solver stops before looking at it.
-            self.domains.push((lo, lo));
-        } else {
-            self.domains.push((lo, hi));
         }
+        self.domains.push((lo, hi));
+        self.var_names.push(None);
         id
+    }
+
+    /// [`Model::int_var`] with a name, which proofs use to refer to it.
+    /// Names should be unique; nothing checks that they are.
+    pub fn int_var_named(&mut self, name: &str, lo: i64, hi: i64) -> VarId {
+        let id = self.int_var(lo, hi);
+        self.var_names[id.index()] = Some(name.to_string());
+        id
+    }
+
+    /// The name proofs use for `var`: the one it was given, or else `_kV`
+    /// for the constant `V` and `_xN` for the `N`th variable.
+    pub fn var_name(&self, var: VarId) -> String {
+        match (&self.var_names[var.index()], self.constant_value(var)) {
+            (Some(name), _) => name.clone(),
+            (None, Some(value)) => format!("_k{value}"),
+            (None, None) => format!("_x{}", var.index()),
+        }
     }
 
     /// The variable fixed to `value`, created the first time it's asked for.
@@ -171,5 +189,16 @@ mod tests {
         assert!(!m.empty_domain);
         m.int_var(5, 2);
         assert!(m.empty_domain);
+    }
+
+    #[test]
+    fn every_variable_has_a_name() {
+        let mut m = Model::new();
+        let x = m.int_var_named("x", 0, 1);
+        let anon = m.int_var(0, 1);
+        let k = m.constant(-3);
+        assert_eq!(m.var_name(x), "x");
+        assert_eq!(m.var_name(anon), "_x1");
+        assert_eq!(m.var_name(k), "_k-3");
     }
 }

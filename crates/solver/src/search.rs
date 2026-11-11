@@ -7,7 +7,7 @@ use std::ops::ControlFlow;
 use crate::engine::Engine;
 use crate::lit::Lit;
 use crate::model::{Solution, VarId};
-use crate::proof::ProofLogger;
+use crate::proof::{Conclusion, ProofLogger};
 use crate::store::DomainStore;
 
 /// Strategy for choosing the next variable to branch on.
@@ -96,7 +96,7 @@ pub(crate) fn search(
         loop {
             proof.backtrack(&decisions);
             let Some(decision) = decisions.pop() else {
-                proof.unsat();
+                proof.conclude(Conclusion::Unsatisfiable);
                 return SearchEnd::Exhausted;
             };
             store.backtrack();

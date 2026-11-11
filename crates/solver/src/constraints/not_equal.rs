@@ -1,8 +1,9 @@
 use super::{Constraint, PropagationContext, Propagator};
 use crate::domain::Conflict;
 use crate::engine::Engine;
+use crate::lit::Lit;
 use crate::model::VarId;
-use crate::proof::Justification;
+use crate::proof::{Ineq, Justification, NotEncodable, OpbEncoder, Reason};
 use crate::store::Event;
 
 #[derive(Clone, Debug)]
@@ -37,6 +38,17 @@ impl Constraint for NotEqual {
             y_offset: self.y_offset,
         }));
     }
+
+    fn encode(&self, opb: &mut OpbEncoder<'_>) -> Result<(), NotEncodable> {
+        let NotEqual { x, y, x_offset, y_offset } = *self;
+        let ne = opb.flag("ne");
+        // x - y, with the offsets moved to the right-hand side.
+        let diff = opb.linear(&[(1, x), (-1, y)]);
+        let shift = i128::from(y_offset) - i128::from(x_offset);
+        opb.row("gt", &Ineq::ge(diff.clone(), 1 + shift).implied_by(ne));
+        opb.row("lt", &Ineq::le(diff, -1 + shift).implied_by(!ne));
+        Ok(())
+    }
 }
 
 struct Prop {
@@ -59,25 +71,19 @@ impl Propagator for Prop {
     fn propagate(&mut self, ctx: &mut PropagationContext<'_>) -> Result<(), Conflict> {
         if self.x == self.y {
             return if self.x_offset == self.y_offset {
-                Err(Conflict)
+                ctx.fail(Justification::Rup(Reason::Lits(&[])))
             } else {
                 Ok(())
             };
         }
         // Each removal is unit propagation on one clause so it is justified by RUP.
         if let Some(vx) = ctx.fixed_value(self.x) {
-            ctx.remove(
-                self.y,
-                vx + self.x_offset - self.y_offset,
-                Justification::Rup,
-            )?;
+            let why = Justification::Rup(Reason::Lits(&[Lit::Eq(self.x, vx)]));
+            ctx.remove(self.y, vx + self.x_offset - self.y_offset, why)?;
         }
         if let Some(vy) = ctx.fixed_value(self.y) {
-            ctx.remove(
-                self.x,
-                vy + self.y_offset - self.x_offset,
-                Justification::Rup,
-            )?;
+            let why = Justification::Rup(Reason::Lits(&[Lit::Eq(self.y, vy)]));
+            ctx.remove(self.x, vy + self.y_offset - self.x_offset, why)?;
         }
         Ok(())
     }

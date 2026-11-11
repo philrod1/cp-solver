@@ -11,8 +11,8 @@
 //! ```
 //!
 //! Like GCS's reader this is strict: all four sections, in that order,
-//! version exactly 1, and anything it can't make sense of is an error rather
-//! than a guess. A keyword it has no case for is reported separately, as
+//! version exactly 1, and anything it can't make sense of is an error.
+//! A keyword it has no case for is reported separately, as
 //! [`ScpError::Unsupported`], so callers can tell "not implemented yet" from
 //! "broken file".
 //!
@@ -112,7 +112,7 @@ pub fn read_scp(text: &str) -> Result<(Model, ScpModel), ScpError> {
         let name = atom(name, "a variable name")?;
         let var = reader
             .model
-            .int_var(integer(lo, "a lower bound")?, integer(hi, "an upper bound")?);
+            .int_var_named(name, integer(lo, "a lower bound")?, integer(hi, "an upper bound")?);
         if reader.vars.insert(name.to_string(), var).is_some() {
             return malformed(format!("duplicate variable '{name}'"));
         }
