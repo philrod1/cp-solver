@@ -12,8 +12,8 @@ use std::sync::OnceLock;
 
 use proptest::prelude::*;
 use solver::{
-    enumerate, solve, AllDifferent, Automaton, Cell, Config, Linear, Model, NotEqual, Outcome, Regular, Table, VarId,
-    VarOrder,
+    AllDifferent, Automaton, Cell, Config, Linear, Model, NotEqual, Outcome, Regular, Table, VarId,
+    VarOrder, enumerate, solve,
 };
 
 /// The VeriPB command, if there is one.
@@ -22,7 +22,10 @@ fn veripb() -> Option<&'static str> {
     FOUND
         .get_or_init(|| {
             let cmd = std::env::var("VERIPB").unwrap_or_else(|_| "veripb".into());
-            let works = Command::new(&cmd).arg("--version").output().is_ok_and(|o| o.status.success());
+            let works = Command::new(&cmd)
+                .arg("--version")
+                .output()
+                .is_ok_and(|o| o.status.success());
             if !works {
                 eprintln!("veripb not found: proofs are written but not checked");
             }
@@ -48,9 +51,14 @@ fn check(stem: &Path) -> Option<String> {
     let cmd = veripb()?;
     let (opb, pbp) = (stem.with_extension("opb"), stem.with_extension("pbp"));
     let out = Command::new(cmd).arg(&opb).arg(&pbp).output().unwrap();
-    let output = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
-    let asserted = std::fs::read_to_string(&pbp).unwrap().lines().any(|l| l.starts_with("a "));
-    let accepted = |l: &&str| l.starts_with("s VERIFIED") || (asserted && l.starts_with("s UNDER ASSERTIONS"));
+    let output =
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    let asserted = std::fs::read_to_string(&pbp)
+        .unwrap()
+        .lines()
+        .any(|l| l.starts_with("a "));
+    let accepted =
+        |l: &&str| l.starts_with("s VERIFIED") || (asserted && l.starts_with("s UNDER ASSERTIONS"));
     match output.lines().find(accepted) {
         Some(verdict) => Some(verdict.to_string()),
         None => panic!("VeriPB rejected {}:\n{output}", pbp.display()),
@@ -58,7 +66,10 @@ fn check(stem: &Path) -> Option<String> {
 }
 
 fn config(name: &str) -> Config {
-    Config { proof: Some(stem(name)), ..Config::default() }
+    Config {
+        proof: Some(stem(name)),
+        ..Config::default()
+    }
 }
 
 fn solx_lines(name: &str) -> usize {
@@ -68,7 +79,10 @@ fn solx_lines(name: &str) -> usize {
 
 /// Enumerate with a proof, check it, and return the number of solutions.
 fn enumerate_checked(name: &str, model: &Model, var_order: VarOrder) -> u64 {
-    let config = Config { var_order, ..config(name) };
+    let config = Config {
+        var_order,
+        ..config(name)
+    };
     let count = enumerate(model, &config, |_| ControlFlow::Continue(())).unwrap();
     assert_eq!(solx_lines(name) as u64, count, "one solx per solution");
     if let Some(verdict) = check(&stem(name)) {
@@ -77,7 +91,10 @@ fn enumerate_checked(name: &str, model: &Model, var_order: VarOrder) -> u64 {
         }
         // Newer VeriPB checks the count, and says it: "... ENUMERATION OF 24 SOLUTIONS".
         if verdict.contains("ENUMERATION OF") {
-            assert!(verdict.ends_with(&format!("ENUMERATION OF {count} SOLUTIONS")), "{name}: {verdict}");
+            assert!(
+                verdict.ends_with(&format!("ENUMERATION OF {count} SOLUTIONS")),
+                "{name}: {verdict}"
+            );
         }
     }
     count
@@ -89,7 +106,10 @@ fn two_equal_constants_are_unsatisfiable() {
     let mut m = Model::new();
     let (x, y) = (m.int_var_named("X", 1, 1), m.int_var_named("Y", 1, 1));
     m.post(NotEqual::new(x, y));
-    assert!(matches!(solve(&m, &config("ne_unsat")).unwrap(), Outcome::Unsatisfiable));
+    assert!(matches!(
+        solve(&m, &config("ne_unsat")).unwrap(),
+        Outcome::Unsatisfiable
+    ));
     if let Some(verdict) = check(&stem("ne_unsat")) {
         assert_eq!(verdict, "s VERIFIED UNSATISFIABLE");
     }
@@ -97,10 +117,13 @@ fn two_equal_constants_are_unsatisfiable() {
 
 fn pigeonhole(pigeons: usize, holes: i64) -> Model {
     let mut m = Model::new();
-    let p: Vec<VarId> = (0..pigeons).map(|i| m.int_var_named(&format!("p{i}"), 1, holes)).collect();
+    let p: Vec<VarId> = (0..pigeons)
+        .map(|i| m.int_var_named(&format!("p{i}"), 1, holes))
+        .collect();
     for i in 0..pigeons {
         for j in i + 1..pigeons {
-            m.post_named(&format!("p{i}p{j}"), NotEqual::new(p[i], p[j])).unwrap();
+            m.post_named(&format!("p{i}p{j}"), NotEqual::new(p[i], p[j]))
+                .unwrap();
         }
     }
     m
@@ -111,7 +134,10 @@ fn pigeonhole_needs_search_and_backtracking() {
     for (pigeons, holes) in [(3, 2), (4, 3), (5, 4)] {
         for order in [VarOrder::InputOrder, VarOrder::SmallestDomain] {
             let name = format!("php_{pigeons}_{holes}_{order:?}");
-            assert_eq!(enumerate_checked(&name, &pigeonhole(pigeons, holes), order), 0);
+            assert_eq!(
+                enumerate_checked(&name, &pigeonhole(pigeons, holes), order),
+                0
+            );
         }
     }
 }
@@ -119,14 +145,23 @@ fn pigeonhole_needs_search_and_backtracking() {
 #[test]
 fn enumerating_permutations() {
     // n pigeons, n holes: n! solutions.
-    assert_eq!(enumerate_checked("perm_3", &pigeonhole(3, 3), VarOrder::InputOrder), 6);
-    assert_eq!(enumerate_checked("perm_4", &pigeonhole(4, 4), VarOrder::SmallestDomain), 24);
+    assert_eq!(
+        enumerate_checked("perm_3", &pigeonhole(3, 3), VarOrder::InputOrder),
+        6
+    );
+    assert_eq!(
+        enumerate_checked("perm_4", &pigeonhole(4, 4), VarOrder::SmallestDomain),
+        24
+    );
 }
 
 #[test]
 fn stopping_at_the_first_solution_proves_satisfiable() {
     let m = pigeonhole(3, 3);
-    assert!(matches!(solve(&m, &config("perm_decide")).unwrap(), Outcome::Satisfiable(_)));
+    assert!(matches!(
+        solve(&m, &config("perm_decide")).unwrap(),
+        Outcome::Satisfiable(_)
+    ));
     if let Some(verdict) = check(&stem("perm_decide")) {
         assert_eq!(verdict, "s VERIFIED SATISFIABLE");
     }
@@ -137,12 +172,21 @@ fn negative_values_and_offsets() {
     // x + 2 != y, y - 1 != z, x != z over domains with negative values:
     // exercises the sign bit and the offsets in the encoding.
     let mut m = Model::new();
-    let (x, y, z) = (m.int_var_named("x", -3, 0), m.int_var_named("y", -2, 1), m.int_var_named("z", -1, -1));
+    let (x, y, z) = (
+        m.int_var_named("x", -3, 0),
+        m.int_var_named("y", -2, 1),
+        m.int_var_named("z", -1, -1),
+    );
     m.post(NotEqual::with_offsets(x, 2, y, 0));
     m.post(NotEqual::with_offsets(y, -1, z, 0));
     m.post(NotEqual::new(x, z));
-    let expected = count(&[(-3, 0), (-2, 1), (-1, -1)], &|v| v[0] + 2 != v[1] && v[1] - 1 != v[2] && v[0] != v[2]);
-    assert_eq!(enumerate_checked("negative", &m, VarOrder::InputOrder), expected);
+    let expected = count(&[(-3, 0), (-2, 1), (-1, -1)], &|v| {
+        v[0] + 2 != v[1] && v[1] - 1 != v[2] && v[0] != v[2]
+    });
+    assert_eq!(
+        enumerate_checked("negative", &m, VarOrder::InputOrder),
+        expected
+    );
 }
 
 #[test]
@@ -168,9 +212,14 @@ fn all_different_pigeonhole() {
     for n in 3..=5 {
         for order in [VarOrder::InputOrder, VarOrder::SmallestDomain] {
             let mut m = Model::new();
-            let v: Vec<VarId> = (0..n).map(|i| m.int_var_named(&format!("p{i}"), 1, n as i64 - 1)).collect();
+            let v: Vec<VarId> = (0..n)
+                .map(|i| m.int_var_named(&format!("p{i}"), 1, n as i64 - 1))
+                .collect();
             m.post_named("holes", AllDifferent::new(&v)).unwrap();
-            assert_eq!(enumerate_checked(&format!("ad_php_{n}_{order:?}"), &m, order), 0);
+            assert_eq!(
+                enumerate_checked(&format!("ad_php_{n}_{order:?}"), &m, order),
+                0
+            );
         }
     }
 }
@@ -178,9 +227,14 @@ fn all_different_pigeonhole() {
 #[test]
 fn all_different_permutations() {
     let mut m = Model::new();
-    let v: Vec<VarId> = (0..4).map(|i| m.int_var_named(&format!("v{i}"), 1, 4)).collect();
+    let v: Vec<VarId> = (0..4)
+        .map(|i| m.int_var_named(&format!("v{i}"), 1, 4))
+        .collect();
     m.post(AllDifferent::new(&v));
-    assert_eq!(enumerate_checked("ad_perm_4", &m, VarOrder::SmallestDomain), 24);
+    assert_eq!(
+        enumerate_checked("ad_perm_4", &m, VarOrder::SmallestDomain),
+        24
+    );
 }
 
 // ---- table ----
@@ -199,7 +253,10 @@ fn table_with_wildcards_and_a_repeated_variable() {
     m.post_named("t", Table::new(&[x, y, x], &rows)).unwrap();
     m.post(NotEqual::new(x, y));
     // x = 0 with y ∈ {-1, 1}, or x = 2 with y = 1.
-    assert_eq!(enumerate_checked("table_fixed", &m, VarOrder::InputOrder), 3);
+    assert_eq!(
+        enumerate_checked("table_fixed", &m, VarOrder::InputOrder),
+        3
+    );
 }
 
 #[test]
@@ -207,7 +264,10 @@ fn a_table_with_no_rows() {
     let mut m = Model::new();
     let x = m.int_var_named("x", 0, 2);
     m.post(Table::new(&[x], &[]));
-    assert_eq!(enumerate_checked("table_empty", &m, VarOrder::InputOrder), 0);
+    assert_eq!(
+        enumerate_checked("table_empty", &m, VarOrder::InputOrder),
+        0
+    );
 }
 
 // ---- linear ----
@@ -221,25 +281,47 @@ fn linear_inferences_are_asserted_for_now() {
     let (x, y) = (m.int_var_named("x", 0, 5), m.int_var_named("y", 0, 5));
     m.post(Linear::eq(&[(x, 1), (y, 2)], 7));
     m.post(Linear::le(&[(x, 1), (y, -1)], 1));
-    assert_eq!(enumerate_checked("linear_small", &m, VarOrder::InputOrder), 2);
+    assert_eq!(
+        enumerate_checked("linear_small", &m, VarOrder::InputOrder),
+        2
+    );
     let pbp = std::fs::read_to_string(stem("linear_small").with_extension("pbp")).unwrap();
-    assert!(pbp.lines().any(|l| l.starts_with("a ")), "expected unchecked steps");
+    assert!(
+        pbp.lines().any(|l| l.starts_with("a ")),
+        "expected unchecked steps"
+    );
 }
 
 // ---- regular ----
 
 /// `0* 111 0+ 11 0*`: a nonogram row with the clue "3 2".
 fn three_two() -> Automaton {
-    let edges = [(0, 0, 0), (0, 1, 1), (1, 1, 2), (2, 1, 3), (3, 0, 4), (4, 0, 4), (4, 1, 5), (5, 1, 6), (6, 0, 6)];
+    let edges = [
+        (0, 0, 0),
+        (0, 1, 1),
+        (1, 1, 2),
+        (2, 1, 3),
+        (3, 0, 4),
+        (4, 0, 4),
+        (4, 1, 5),
+        (5, 1, 6),
+        (6, 0, 6),
+    ];
     Automaton::new(7, &edges, &[6]).unwrap()
 }
 
 #[test]
 fn regular_nonogram_row() {
     let mut m = Model::new();
-    let cells: Vec<VarId> = (0..10).map(|i| m.int_var_named(&format!("c{i}"), 0, 1)).collect();
-    m.post_named("row", Regular::new(&cells, three_two())).unwrap();
-    assert_eq!(enumerate_checked("regular_row", &m, VarOrder::InputOrder), 15);
+    let cells: Vec<VarId> = (0..10)
+        .map(|i| m.int_var_named(&format!("c{i}"), 0, 1))
+        .collect();
+    m.post_named("row", Regular::new(&cells, three_two()))
+        .unwrap();
+    assert_eq!(
+        enumerate_checked("regular_row", &m, VarOrder::InputOrder),
+        15
+    );
 }
 
 #[test]
@@ -247,28 +329,51 @@ fn regular_needs_helpers_for_forward_deaths() {
     // The hand-checked example: A goes to B or C on 0 or 1; B and C loop on
     // 0 and 1 and go to D on 2; D (accepting) loops on 0. Over {0, 1, 2},
     // reaching D at layer 2 needs X1 = 2, with two states behind it.
-    let edges = [(0, 0, 1), (0, 1, 2), (1, 0, 1), (1, 1, 1), (1, 2, 3), (2, 0, 2), (2, 1, 2), (2, 2, 3), (3, 0, 3)];
+    let edges = [
+        (0, 0, 1),
+        (0, 1, 2),
+        (1, 0, 1),
+        (1, 1, 1),
+        (1, 2, 3),
+        (2, 0, 2),
+        (2, 1, 2),
+        (2, 2, 3),
+        (3, 0, 3),
+    ];
     let a = Automaton::new(4, &edges, &[3]).unwrap();
     for order in [VarOrder::InputOrder, VarOrder::SmallestDomain] {
         let mut m = Model::new();
-        let x: Vec<VarId> = (0..4).map(|i| m.int_var_named(&format!("x{i}"), 0, 2)).collect();
+        let x: Vec<VarId> = (0..4)
+            .map(|i| m.int_var_named(&format!("x{i}"), 0, 2))
+            .collect();
         m.post_named("r", Regular::new(&x, a.clone())).unwrap();
         let expected = count(&[(0, 2); 4], &|v| a.accepts(v));
-        assert_eq!(enumerate_checked(&format!("regular_helpers_{order:?}"), &m, order), expected);
+        assert_eq!(
+            enumerate_checked(&format!("regular_helpers_{order:?}"), &m, order),
+            expected
+        );
     }
 }
 
 #[test]
 fn regular_with_a_repeated_variable() {
     // x y x y with "no two equal neighbours" over {0, 1, 2}.
-    let edges: Vec<(usize, i64, usize)> =
-        (0..4).flat_map(|q| (0..3).filter(move |&v| q == 0 || v + 1 != q as i64).map(move |v| (q, v, v as usize + 1))).collect();
+    let edges: Vec<(usize, i64, usize)> = (0..4)
+        .flat_map(|q| {
+            (0..3)
+                .filter(move |&v| q == 0 || v + 1 != q as i64)
+                .map(move |v| (q, v, v as usize + 1))
+        })
+        .collect();
     let a = Automaton::new(4, &edges, &[1, 2, 3]).unwrap();
     let mut m = Model::new();
     let (x, y) = (m.int_var_named("x", 0, 2), m.int_var_named("y", 0, 2));
     m.post(Regular::new(&[x, y, x, y], a.clone()));
     let expected = count(&[(0, 2); 2], &|v| a.accepts(&[v[0], v[1], v[0], v[1]]));
-    assert_eq!(enumerate_checked("regular_repeated", &m, VarOrder::InputOrder), expected);
+    assert_eq!(
+        enumerate_checked("regular_repeated", &m, VarOrder::InputOrder),
+        expected
+    );
 }
 
 // ---- random models, against brute force ----
@@ -296,11 +401,19 @@ fn domains(n: std::ops::RangeInclusive<usize>) -> impl Strategy<Value = Vec<(i64
 }
 
 fn model_vars(m: &mut Model, domains: &[(i64, i64)]) -> Vec<VarId> {
-    domains.iter().enumerate().map(|(i, &(lo, hi))| m.int_var_named(&format!("v{i}"), lo, hi)).collect()
+    domains
+        .iter()
+        .enumerate()
+        .map(|(i, &(lo, hi))| m.int_var_named(&format!("v{i}"), lo, hi))
+        .collect()
 }
 
 fn order(input_order: bool) -> VarOrder {
-    if input_order { VarOrder::InputOrder } else { VarOrder::SmallestDomain }
+    if input_order {
+        VarOrder::InputOrder
+    } else {
+        VarOrder::SmallestDomain
+    }
 }
 
 /// `x + a != y + b` as `(x, a, y, b)`, with variable indices.

@@ -27,10 +27,10 @@ pub enum AutomatonError {
 impl fmt::Display for AutomatonError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AutomatonError::NoStates => write!(f, "No state for this automaton"),
-            AutomatonError::NoSuchState(q) => write!(f, "No state {q}"),
+            AutomatonError::NoStates => write!(f, "no state for this automaton"),
+            AutomatonError::NoSuchState(q) => write!(f, "no state {q}"),
             AutomatonError::NonDeterministic { state, symbol } => {
-                write!(f, "State {state} has multiple transitions on {symbol}")
+                write!(f, "state {state} has multiple transitions on {symbol}")
             }
         }
     }
@@ -125,11 +125,11 @@ pub struct Regular {
 
 impl Regular {
     pub fn new(vars: &[VarId], automaton: Automaton) -> Self {
-        return Self {
+        Self {
             vars: vars.to_vec(),
             automaton,
             flags: Flags::default(),
-        };
+        }
     }
 }
 

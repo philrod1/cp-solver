@@ -22,8 +22,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use solver::{
-    AllDifferent, Automaton, Cell, Constraint, Linear, Model, NotEqual, Table, VarId,
-    regular_by_tables,
+    AllDifferent, Automaton, Cell, Constraint, Linear, Model, NotEqual, Regular, Table, VarId,
 };
 
 use crate::sexpr::{self, SExpr, SExprError};
@@ -323,9 +322,7 @@ impl Reader {
                 let vars = self.var_list(vars, "a regular variable list")?;
                 let automaton = automaton(num_states, edges, finals)
                     .map_err(|e| ScpError::Malformed(format!("in constraint '{label}': {e}")))?;
-                regular_by_tables(&mut self.model, label, &vars, &automaton)
-                    .map(|_| ())
-                    .or_else(|e| malformed(e.to_string()))
+                self.post(label, Regular::new(&vars, automaton))
             }
             _ => Err(ScpError::Unsupported(op.to_string())),
         }

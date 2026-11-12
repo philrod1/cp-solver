@@ -32,7 +32,7 @@ impl VeriPb {
         let opb = write_opb(model, &mut enc).map_err(|name| {
             io::Error::new(
                 io::ErrorKind::Unsupported,
-                format!("Constraint '{name}' has no proof encoding."),
+                format!("constraint '{name}' has no proof encoding"),
             )
         })?;
         fs::write(with_extension(stem, "opb"), opb)?;

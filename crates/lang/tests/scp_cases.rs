@@ -6,13 +6,16 @@
 //!     GCS_SCP_CASES=~/code/glasgow-constraint-solver/verified_encodings/scp_cases \
 //!         cargo test -p lang --test scp_cases -- --nocapture
 //!
+//! Each case whose constraints all have proof encodings is also solved
+//! with a proof, which must pass VeriPB if it is installed.
+//!
 //! Without the variable set, the test does nothing.
 
 mod common;
 
 use std::fs;
 
-use common::{Run, Tally, run};
+use common::{Proof, Run, Tally, run, run_with_proof};
 
 #[test]
 fn gcs_scp_cases() {
@@ -28,6 +31,9 @@ fn gcs_scp_cases() {
     paths.sort();
     assert!(!paths.is_empty(), "no .scp files in {dir}");
 
+    let proof_dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scp_case_proofs");
+    std::fs::create_dir_all(&proof_dir).unwrap();
+    let mut verified = Vec::new();
     let mut tally = Tally::default();
     for path in &paths {
         let name = path.file_stem().unwrap().to_string_lossy().to_string();
@@ -44,10 +50,19 @@ fn gcs_scp_cases() {
                 } else {
                     tally.passed += 1;
                 }
+                match run_with_proof(&text, &proof_dir.join(&name)) {
+                    Ok(Proof::Verified(verdict)) => verified.push(format!("{name}: {verdict}")),
+                    Ok(Proof::NotWritten | Proof::NotChecked) => {}
+                    Err(e) => tally.failures.push(format!("{name}: {e}")),
+                }
             }
         }
     }
     tally.report(&format!("scp cases in {dir}"));
+    println!("   {} proofs checked by VeriPB:", verified.len());
+    for v in &verified {
+        println!("     {v}");
+    }
     assert!(
         tally.failures.is_empty(),
         "{} failures",
