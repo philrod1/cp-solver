@@ -21,7 +21,10 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use solver::{AllDifferent, Cell, Constraint, Linear, Model, NotEqual, Table, VarId};
+use solver::{
+    AllDifferent, Automaton, Cell, Constraint, Linear, Model, NotEqual, Table,
+    VarId, regular_by_tables,
+};
 
 use crate::sexpr::{self, SExpr, SExprError};
 
@@ -78,7 +81,10 @@ pub struct ScpModel {
 
 impl ScpModel {
     pub fn var(&self, name: &str) -> Option<VarId> {
-        self.variables.iter().find(|(n, _)| n == name).map(|&(_, v)| v)
+        self.variables
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|&(_, v)| v)
     }
 }
 
@@ -88,14 +94,20 @@ pub fn read_scp(text: &str) -> Result<(Model, ScpModel), ScpError> {
     let top = sexpr::parse(text)?;
     let sections = list(&top, "the document")?;
     let [version, variables, constraints, prob_type] = sections else {
-        return malformed("a document is ((version 1) (variables ...) (constraints ...) (prob_type ...))");
+        return malformed(
+            "a document is ((version 1) (variables ...) (constraints ...) (prob_type ...))",
+        );
     };
 
     // The version first, so an incompatible producer is caught before
     // anything else is read.
     match section(version, "version")? {
         [v] if integer(v, "the version")? == 1 => {}
-        [v] => return malformed(format!("unsupported version {v}: only version 1 is accepted")),
+        [v] => {
+            return malformed(format!(
+                "unsupported version {v}: only version 1 is accepted"
+            ));
+        }
         _ => return malformed("the version section is (version 1)"),
     }
     let objective = check_prob_type(prob_type)?;
@@ -107,12 +119,16 @@ pub fn read_scp(text: &str) -> Result<(Model, ScpModel), ScpError> {
     let mut declared = Vec::new();
     for decl in section(variables, "variables")? {
         let [name, lo, hi] = list(decl, "a variable declaration")? else {
-            return malformed(format!("a variable declaration is (name lower upper), got {decl}"));
+            return malformed(format!(
+                "a variable declaration is (name lower upper), got {decl}"
+            ));
         };
         let name = atom(name, "a variable name")?;
-        let var = reader
-            .model
-            .int_var_named(name, integer(lo, "a lower bound")?, integer(hi, "an upper bound")?);
+        let var = reader.model.int_var_named(
+            name,
+            integer(lo, "a lower bound")?,
+            integer(hi, "an upper bound")?,
+        );
         if reader.vars.insert(name.to_string(), var).is_some() {
             return malformed(format!("duplicate variable '{name}'"));
         }
@@ -128,7 +144,11 @@ pub fn read_scp(text: &str) -> Result<(Model, ScpModel), ScpError> {
         Objective::Enumerate => ProbType::Enumerate,
         Objective::Optimise { maximise, target } => {
             let var = reader.var(&target)?;
-            if maximise { ProbType::Maximize(var) } else { ProbType::Minimize(var) }
+            if maximise {
+                ProbType::Maximize(var)
+            } else {
+                ProbType::Minimize(var)
+            }
         }
     };
     let scp = ScpModel {
@@ -155,7 +175,9 @@ fn check_prob_type(e: &SExpr) -> Result<Objective, ScpError> {
         SExpr::Atom(a) if a == "enumerate" => Ok(Objective::Enumerate),
         SExpr::Atom(a) => malformed(format!("unknown prob_type '{a}'")),
         SExpr::List(parts) => match parts.as_slice() {
-            [SExpr::Atom(dir), target @ SExpr::Atom(_)] if dir == "minimize" || dir == "maximize" => {
+            [SExpr::Atom(dir), target @ SExpr::Atom(_)]
+                if dir == "minimize" || dir == "maximize" =>
+            {
                 Ok(Objective::Optimise {
                     maximise: dir == "maximize",
                     target: target.clone(),
@@ -238,10 +260,10 @@ impl Reader {
                 let [x, y] = args else { return wrong() };
                 // All four as `a - b <= k`.
                 let (a, b, k) = match op {
-                    "less_than" => (x, y, -1),     //   x <  y  is  x - y <= -1
-                    "less_equal" => (x, y, 0),     //   x <= y  is  x - y <= 0
-                    "greater_than" => (y, x, -1),  //   x >  y  is  y - x <= -1
-                    _ => (y, x, 0),                //   x >= y  is  y - x <= 0
+                    "less_than" => (x, y, -1),    //   x <  y  is  x - y <= -1
+                    "less_equal" => (x, y, 0),    //   x <= y  is  x - y <= 0
+                    "greater_than" => (y, x, -1), //   x >  y  is  y - x <= -1
+                    _ => (y, x, 0),               //   x >= y  is  y - x <= 0
                 };
                 let sum = self.sum_of(&[(1, a), (-1, b)])?;
                 self.post(label, sum.le(k)?)
@@ -253,11 +275,15 @@ impl Reader {
                 let sum = self.sum_of(&[(1, a), (sign, b), (-1, r)])?;
                 self.post(label, sum.eq(0)?)
             }
-            "lin_equals" | "lin_less_equal" | "lin_less_than" | "lin_greater_equal" | "lin_greater_than" => {
+            "lin_equals" | "lin_less_equal" | "lin_less_than" | "lin_greater_equal"
+            | "lin_greater_than" => {
                 let [pairs, value] = args else { return wrong() };
                 let pairs = list(pairs, "a linear coefficient/variable list")?;
                 if pairs.len() % 2 != 0 {
-                    return malformed(format!("'{op}' needs coefficient/variable pairs, got {}", SExpr::List(pairs.to_vec())));
+                    return malformed(format!(
+                        "'{op}' needs coefficient/variable pairs, got {}",
+                        SExpr::List(pairs.to_vec())
+                    ));
                 }
                 let mut sum = Sum::default();
                 for pair in pairs.chunks(2) {
@@ -289,6 +315,17 @@ impl Reader {
                 // A row of the wrong length is legal and makes the constraint
                 // unsatisfiable; Table::new already handles that.
                 self.post(label, Table::new(&vars, &rows))
+            }
+            "regular" => {
+                let [vars, num_states, edges, finals] = args else {
+                    return wrong();
+                };
+                let vars = self.var_list(vars, "a regular variable list")?;
+                let automaton = automaton(num_states, edges, finals)
+                    .map_err(|e| ScpError::Malformed(format!("in constraint '{label}': {e}")))?;
+                regular_by_tables(&mut self.model, label, &vars, &automaton)
+                    .map(|_| ())
+                    .or_else(|e| malformed(e.to_string()))
             }
             _ => Err(ScpError::Unsupported(op.to_string())),
         }
@@ -365,7 +402,8 @@ fn section<'a>(e: &'a SExpr, tag: &str) -> Result<&'a [SExpr], ScpError> {
 
 fn integer(e: &SExpr, what: &str) -> Result<i64, ScpError> {
     let a = atom(e, what)?;
-    parse_integer(a).ok_or_else(|| ScpError::Malformed(format!("expected an integer for {what}, got '{a}'")))
+    parse_integer(a)
+        .ok_or_else(|| ScpError::Malformed(format!("expected an integer for {what}, got '{a}'")))
 }
 
 /// An optional minus sign and digits; `+5`, `0x10` and friends are not
@@ -376,6 +414,40 @@ fn parse_integer(a: &str) -> Option<i64> {
         return None;
     }
     a.parse().ok()
+}
+
+/// A `regular` constraint's automaton, from GCS's form: `nstates`, then one
+/// list of `(symbol target)` edges per state in order, then the accepting
+/// states. The start state is 0. Only deterministic automata are accepted.
+fn automaton(num_states: &SExpr, edges: &SExpr, finals: &SExpr) -> Result<Automaton, String> {
+    let state = |e: &SExpr, what: &str| -> Result<usize, String> {
+        let q = integer(e, what).map_err(|e| e.to_string())?;
+        usize::try_from(q).map_err(|_| format!("{what} can't be negative, got {q}"))
+    };
+    let num_states = state(num_states, "the number of states")?;
+    let per_state = list(edges, "the per-state edge lists").map_err(|e| e.to_string())?;
+    if per_state.len() != num_states {
+        return Err(format!(
+            "{num_states} states but {} edge lists",
+            per_state.len()
+        ));
+    }
+    let mut transitions = Vec::new();
+    for (q, edge_list) in per_state.iter().enumerate() {
+        for edge in list(edge_list, "a state's edge list").map_err(|e| e.to_string())? {
+            let [symbol, target] = list(edge, "an edge").map_err(|e| e.to_string())? else {
+                return Err(format!("an edge is (symbol target), got {edge}"));
+            };
+            let symbol = integer(symbol, "an edge's symbol").map_err(|e| e.to_string())?;
+            transitions.push((q, symbol, state(target, "an edge's target")?));
+        }
+    }
+    let finals = list(finals, "the accepting states")
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(|f| state(f, "an accepting state"))
+        .collect::<Result<Vec<_>, _>>()?;
+    Automaton::new(num_states, &transitions, &finals).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -401,7 +473,13 @@ mod tests {
     fn reads_variables_and_prob_type() {
         let (model, scp) = read_scp(&doc("(x 0 10) (y -3 3)", "", "decide")).unwrap();
         assert_eq!(model.num_vars(), 2);
-        assert_eq!(scp.variables.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["x", "y"]);
+        assert_eq!(
+            scp.variables
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>(),
+            ["x", "y"]
+        );
         assert_eq!(scp.prob_type, ProbType::Decide);
         let (_, scp) = read_scp(&doc("(x 0 10)", "", "(maximize x)")).unwrap();
         assert_eq!(scp.prob_type, ProbType::Maximize(scp.var("x").unwrap()));
@@ -416,7 +494,10 @@ mod tests {
                           (c2 multiply x y p))
                       (prob_type (maximize p)))";
         // We don't have multiply yet: that's Unsupported, not Malformed.
-        assert_eq!(read_scp(text).unwrap_err(), ScpError::Unsupported("multiply".into()));
+        assert_eq!(
+            read_scp(text).unwrap_err(),
+            ScpError::Unsupported("multiply".into())
+        );
     }
 
     #[test]
@@ -436,16 +517,25 @@ mod tests {
             "( (version 1) (variables (x 0 1)) (constraints) (prob_type (minimize nope)) )",
         ];
         for text in bad {
-            assert!(matches!(read_scp(text), Err(ScpError::Malformed(_))), "{text}");
+            assert!(
+                matches!(read_scp(text), Err(ScpError::Malformed(_))),
+                "{text}"
+            );
         }
-        assert!(matches!(read_scp("( (version 1)"), Err(ScpError::Syntax(_))));
+        assert!(matches!(
+            read_scp("( (version 1)"),
+            Err(ScpError::Syntax(_))
+        ));
     }
 
     #[test]
     fn unknown_and_reified_keywords_are_unsupported() {
         for op in ["multiply", "not_equals_iff", "lin_not_equals", "wibble"] {
             let text = doc("(x 0 1) (y 0 1)", &format!("(c {op} x y)"), "decide");
-            assert_eq!(read_scp(&text).unwrap_err(), ScpError::Unsupported(op.into()));
+            assert_eq!(
+                read_scp(&text).unwrap_err(),
+                ScpError::Unsupported(op.into())
+            );
         }
     }
 
@@ -472,8 +562,14 @@ mod tests {
 
     #[test]
     fn not_equals_and_equals() {
-        assert_eq!(count(&doc("(x 0 2) (y 0 2)", "(c not_equals x y)", "enumerate")), 6);
-        assert_eq!(count(&doc("(x 0 2) (y 0 2)", "(c equals x y)", "enumerate")), 3);
+        assert_eq!(
+            count(&doc("(x 0 2) (y 0 2)", "(c not_equals x y)", "enumerate")),
+            6
+        );
+        assert_eq!(
+            count(&doc("(x 0 2) (y 0 2)", "(c equals x y)", "enumerate")),
+            3
+        );
     }
 
     #[test]
@@ -500,22 +596,59 @@ mod tests {
     fn linear_family() {
         // x + 2y over x, y in 0..3; check each relation against brute force.
         let v = "(x 0 3) (y 0 3)";
-        let brute = |ok: fn(i64) -> bool| (0..=3).flat_map(|x| (0..=3).map(move |y| x + 2 * y)).filter(|&s| ok(s)).count() as u64;
-        assert_eq!(count(&doc(v, "(c lin_equals (1 x 2 y) 4)", "enumerate")), brute(|s| s == 4));
-        assert_eq!(count(&doc(v, "(c lin_less_equal (1 x 2 y) 4)", "enumerate")), brute(|s| s <= 4));
-        assert_eq!(count(&doc(v, "(c lin_less_than (1 x 2 y) 4)", "enumerate")), brute(|s| s < 4));
-        assert_eq!(count(&doc(v, "(c lin_greater_equal (1 x 2 y) 4)", "enumerate")), brute(|s| s >= 4));
-        assert_eq!(count(&doc(v, "(c lin_greater_than (1 x 2 y) 4)", "enumerate")), brute(|s| s > 4));
+        let brute = |ok: fn(i64) -> bool| {
+            (0..=3)
+                .flat_map(|x| (0..=3).map(move |y| x + 2 * y))
+                .filter(|&s| ok(s))
+                .count() as u64
+        };
+        assert_eq!(
+            count(&doc(v, "(c lin_equals (1 x 2 y) 4)", "enumerate")),
+            brute(|s| s == 4)
+        );
+        assert_eq!(
+            count(&doc(v, "(c lin_less_equal (1 x 2 y) 4)", "enumerate")),
+            brute(|s| s <= 4)
+        );
+        assert_eq!(
+            count(&doc(v, "(c lin_less_than (1 x 2 y) 4)", "enumerate")),
+            brute(|s| s < 4)
+        );
+        assert_eq!(
+            count(&doc(v, "(c lin_greater_equal (1 x 2 y) 4)", "enumerate")),
+            brute(|s| s >= 4)
+        );
+        assert_eq!(
+            count(&doc(v, "(c lin_greater_than (1 x 2 y) 4)", "enumerate")),
+            brute(|s| s > 4)
+        );
     }
 
     #[test]
     fn all_different_and_table() {
         // GCS's own all_different_sat and table_sat cases.
-        assert_eq!(count(&doc("(A 0 3) (B 0 3) (C 0 3)", "(_1 all_different (A B C))", "enumerate")), 24);
-        assert_eq!(count(&doc("(A 0 2) (B 0 2)", "(_1 table ((0 1) (1 2) (2 0)) (A B))", "enumerate")), 3);
+        assert_eq!(
+            count(&doc(
+                "(A 0 3) (B 0 3) (C 0 3)",
+                "(_1 all_different (A B C))",
+                "enumerate"
+            )),
+            24
+        );
+        assert_eq!(
+            count(&doc(
+                "(A 0 2) (B 0 2)",
+                "(_1 table ((0 1) (1 2) (2 0)) (A B))",
+                "enumerate"
+            )),
+            3
+        );
         // Wildcards: (1 * 3) and (* 2 *) over 1..3 has 11 solutions.
         let v = "(a 1 3) (b 1 3) (c 1 3)";
-        assert_eq!(count(&doc(v, "(t table ((1 * 3) (* 2 *)) (a b c))", "enumerate")), 11);
+        assert_eq!(
+            count(&doc(v, "(t table ((1 * 3) (* 2 *)) (a b c))", "enumerate")),
+            11
+        );
     }
 
     // --- Constants -----------------------------------------------------------
@@ -526,12 +659,23 @@ mod tests {
         let (model, _) = read_scp(&doc("(x 0 9)", "(c plus x 3 5)", "enumerate")).unwrap();
         assert_eq!(model.num_vars(), 1);
         assert_eq!(count(&doc("(x 0 9)", "(c plus x 3 5)", "enumerate")), 1);
-        assert_eq!(count(&doc("(x 0 9)", "(c lin_less_equal (2 x 1 4) 10)", "enumerate")), 4);
+        assert_eq!(
+            count(&doc(
+                "(x 0 9)",
+                "(c lin_less_equal (2 x 1 4) 10)",
+                "enumerate"
+            )),
+            4
+        );
     }
 
     #[test]
     fn constants_elsewhere_become_shared_fixed_variables() {
-        let text = doc("(x 0 3) (y 0 3)", "(a not_equals x 2) (b all_different (y 2 x))", "enumerate");
+        let text = doc(
+            "(x 0 3) (y 0 3)",
+            "(a not_equals x 2) (b all_different (y 2 x))",
+            "enumerate",
+        );
         let (mut model, _) = read_scp(&text).unwrap();
         assert_eq!(model.num_vars(), 3); // x, y and one shared constant 2
         let two = model.constant(2); // asking again finds the same variable
@@ -544,13 +688,20 @@ mod tests {
     #[test]
     fn a_constant_objective_is_allowed() {
         let (model, scp) = read_scp(&doc("(x 0 1)", "", "(minimize 3)")).unwrap();
-        let ProbType::Minimize(v) = scp.prob_type else { panic!() };
+        let ProbType::Minimize(v) = scp.prob_type else {
+            panic!()
+        };
         assert_eq!(model.constant_value(v), Some(3));
     }
 
     #[test]
     fn labels_are_kept() {
-        let (model, _) = read_scp(&doc("(x 0 1) (y 0 1)", "(first not_equals x y) (_2 equals x y)", "decide")).unwrap();
+        let (model, _) = read_scp(&doc(
+            "(x 0 1) (y 0 1)",
+            "(first not_equals x y) (_2 equals x y)",
+            "decide",
+        ))
+        .unwrap();
         assert_eq!(model.constraint_names(), ["first", "_2"]);
     }
 }

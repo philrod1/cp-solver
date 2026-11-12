@@ -12,7 +12,7 @@ mod common;
 
 use std::fs;
 
-use common::{run, Run, Tally};
+use common::{Run, Tally, run};
 
 #[test]
 fn gcs_scp_cases() {
@@ -37,7 +37,8 @@ fn gcs_scp_cases() {
             Ok(Run::Unsupported(op)) => *tally.unsupported.entry(op).or_default() += 1,
             Ok(Run::Optimisation) => tally.optimisation += 1,
             Ok(Run::Solutions(n)) => {
-                let wrong = (name.ends_with("_sat") && n == 0) || (name.ends_with("_unsat") && n > 0);
+                let wrong =
+                    (name.ends_with("_sat") && n == 0) || (name.ends_with("_unsat") && n > 0);
                 if wrong {
                     tally.failures.push(format!("{name}: found {n} solutions"));
                 } else {
@@ -47,5 +48,9 @@ fn gcs_scp_cases() {
         }
     }
     tally.report(&format!("scp cases in {dir}"));
-    assert!(tally.failures.is_empty(), "{} failures", tally.failures.len());
+    assert!(
+        tally.failures.is_empty(),
+        "{} failures",
+        tally.failures.len()
+    );
 }

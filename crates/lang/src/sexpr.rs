@@ -148,7 +148,11 @@ mod tests {
         assert_eq!(parse("()").unwrap(), SExpr::List(vec![]));
         assert_eq!(
             parse("(a (b -1) *)").unwrap(),
-            SExpr::List(vec![atom("a"), SExpr::List(vec![atom("b"), atom("-1")]), atom("*")])
+            SExpr::List(vec![
+                atom("a"),
+                SExpr::List(vec![atom("b"), atom("-1")]),
+                atom("*")
+            ])
         );
     }
 

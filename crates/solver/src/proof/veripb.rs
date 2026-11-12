@@ -5,8 +5,8 @@ use std::fs::{self, File};
 use std::io::{self, BufWriter, Write as _};
 use std::path::{Path, PathBuf};
 
-use super::opb::{eq_definition, write_opb, Atoms, Encoding};
-use super::pb::{write_lit, Ineq, PbLit};
+use super::opb::{Atoms, Encoding, eq_definition, write_opb};
+use super::pb::{Ineq, PbLit, write_lit};
 use super::{Conclusion, ProofLogger, Rule};
 use crate::lit::Lit;
 use crate::model::{Model, VarId};
@@ -39,7 +39,13 @@ impl VeriPb {
         let mut out = BufWriter::new(File::create(with_extension(stem, "pbp"))?);
         out.write_all(b"pseudo-Boolean proof version 3.0\n")?;
         let atoms = (0..model.num_vars()).map(|_| Atoms::default()).collect();
-        let mut proof = VeriPb { enc, atoms, out, line: String::new(), error: None };
+        let mut proof = VeriPb {
+            enc,
+            atoms,
+            out,
+            line: String::new(),
+            error: None,
+        };
         proof.adopt_opb_atoms();
         Ok(proof)
     }
@@ -59,7 +65,9 @@ impl VeriPb {
 
     fn emit(&mut self) {
         self.line.push('\n');
-        if self.error.is_none() && let Err(e) = self.out.write_all(self.line.as_bytes()) {
+        if self.error.is_none()
+            && let Err(e) = self.out.write_all(self.line.as_bytes())
+        {
             self.error = Some(e);
         }
         self.line.clear();
@@ -71,12 +79,10 @@ impl VeriPb {
     }
 
     fn emit_step(&mut self, rule: Rule, ineq: &Ineq) {
-        self.line.push_str(
-            match rule {
-                Rule::Rup => "rup ",
-                Rule::Assert => "a ",
-            }
-        );
+        self.line.push_str(match rule {
+            Rule::Rup => "rup ",
+            Rule::Assert => "a ",
+        });
         ineq.write_to(&self.enc.names, &mut self.line);
         self.line.push_str(" ;");
         self.emit();
@@ -87,7 +93,8 @@ impl VeriPb {
         ineq.write_to(&self.enc.names, &mut self.line);
         self.line.push_str(" : ");
         write_lit(&self.enc.names, atom, &mut self.line);
-        self.line.push_str(if value { " -> 1 ;" } else { " -> 0 ;" });
+        self.line
+            .push_str(if value { " -> 1 ;" } else { " -> 0 ;" });
         self.emit();
     }
 
@@ -216,7 +223,9 @@ impl ProofLogger for VeriPb {
     fn conclude(&mut self, conclusion: Conclusion) {
         let text = match conclusion {
             Conclusion::Satisfiable => "output NONE ;\nconclusion SAT ;".to_string(),
-            Conclusion::Unsatisfiable => "rup >= 1 ;\noutput NONE ;\nconclusion UNSAT : -1 ;".to_string(),
+            Conclusion::Unsatisfiable => {
+                "rup >= 1 ;\noutput NONE ;\nconclusion UNSAT : -1 ;".to_string()
+            }
             Conclusion::Enumerated(n) => {
                 format!("rup >= 1 ;\noutput NONE ;\nconclusion ENUMERATION_COMPLETE {n} : -1 ;")
             }
@@ -250,8 +259,14 @@ mod tests {
             .arg(with_extension(stem, "pbp"))
             .output()
             .ok()?;
-        let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
-        Some(text.lines().find(|l| l.starts_with("s ")).unwrap_or(&text).to_string())
+        let text = String::from_utf8_lossy(&out.stdout).to_string()
+            + &String::from_utf8_lossy(&out.stderr);
+        Some(
+            text.lines()
+                .find(|l| l.starts_with("s "))
+                .unwrap_or(&text)
+                .to_string(),
+        )
     }
 
     #[test]
@@ -280,7 +295,12 @@ mod tests {
         rup(&mut p, &[Lit::Eq(x, 100)], Lit::Ge(x, -200));
         rup(&mut p, &[Lit::Eq(x, 100)], Lit::Neq(x, 450));
         // Bounds and holes pin down a value.
-        let reason = [Lit::Ge(x, 300), Lit::Lt(x, 303), Lit::Neq(x, 300), Lit::Neq(x, 302)];
+        let reason = [
+            Lit::Ge(x, 300),
+            Lit::Lt(x, 303),
+            Lit::Neq(x, 300),
+            Lit::Neq(x, 302),
+        ];
         rup(&mut p, &reason, Lit::Eq(x, 301));
         // Some value is taken: the whole domain can't be ruled out. This is
         // the one that needs the pins.

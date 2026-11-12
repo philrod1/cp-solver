@@ -15,8 +15,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
-use super::pb::{ Ineq, Names, PbLit };
-use crate::model::{ Model, VarId };
+use super::pb::{Ineq, Names, PbLit};
+use crate::model::{Model, VarId};
 
 #[derive(Debug)]
 pub(crate) struct IntBits {
@@ -38,7 +38,7 @@ impl IntBits {
             let bit = names.fresh(format!("i[{name}][b{b}]"));
             bits.push(((1i128 << b), PbLit::pos(bit)));
         }
-        IntBits{ name, bits, lo, hi }
+        IntBits { name, bits, lo, hi }
     }
 
     pub(crate) fn scaled(&self, coeff: i128) -> impl Iterator<Item = (i128, PbLit)> + '_ {
@@ -54,7 +54,10 @@ impl IntBits {
     pub(crate) fn ge_definition(&self, v: i64, atom: PbLit) -> [Ineq; 2] {
         let sum: Vec<_> = self.scaled(1).collect();
         let v = i128::from(v);
-        [Ineq::ge(sum.clone(), v).implied_by(atom), Ineq::le(sum, v - 1).implied_by(!atom)]
+        [
+            Ineq::ge(sum.clone(), v).implied_by(atom),
+            Ineq::le(sum, v - 1).implied_by(!atom),
+        ]
     }
 }
 
@@ -62,14 +65,21 @@ impl IntBits {
 /// from `ge` (x >= v) and `gt` (x >= v + 1), as two halves:
 /// `[r]` atom => ge && !gt, and `[f]` ge && !gt => atom.
 pub(crate) fn eq_definition(ge: PbLit, gt: PbLit, atom: PbLit) -> [Ineq; 2] {
-    [Ineq::ge(vec![(1, ge), (1, !gt)], 2).implied_by(atom), Ineq::clause([atom, !ge, gt])]
+    [
+        Ineq::ge(vec![(1, ge), (1, !gt)], 2).implied_by(atom),
+        Ineq::clause([atom, !ge, gt]),
+    ]
 }
 
 /// How many magnitude bits a domain needs, and whether it needs a sign bit
 pub(crate) fn bit_widths(lo: i64, hi: i64) -> (u32, bool) {
     // An empty domain (lo > hi) still needs bits for the bound rows that  contradict each other.
     let hi = hi.max(lo);
-    let largest = if lo < 0 { (lo.unsigned_abs() - 1).max(hi.max(0) as u64) } else { hi as u64 };
+    let largest = if lo < 0 {
+        (lo.unsigned_abs() - 1).max(hi.max(0) as u64)
+    } else {
+        hi as u64
+    };
     (u64::BITS - largest.leading_zeros(), lo < 0)
 }
 
@@ -116,11 +126,18 @@ pub struct OpbEncoder<'a> {
 
 impl OpbEncoder<'_> {
     pub(crate) fn flag(&mut self, role: &str) -> PbLit {
-        PbLit::pos(self.enc.names.fresh(format!("b[{}][{role}]", self.constraint_name)))
+        PbLit::pos(
+            self.enc
+                .names
+                .fresh(format!("b[{}][{role}]", self.constraint_name)),
+        )
     }
 
     pub(crate) fn linear(&self, terms: &[(i64, VarId)]) -> Vec<(i128, PbLit)> {
-        terms.iter().flat_map(|&(a, x)| self.enc.int(x).scaled(a.into())).collect()
+        terms
+            .iter()
+            .flat_map(|&(a, x)| self.enc.int(x).scaled(a.into()))
+            .collect()
     }
 
     pub(crate) fn row(&mut self, role: &str, ineq: &Ineq) {
@@ -161,7 +178,11 @@ impl OpbEncoder<'_> {
     /// A fresh flag numbered by `index`, e.g. `x[name][0_2]`.
     pub(crate) fn indexed_flag(&mut self, index: &[usize]) -> PbLit {
         let index: Vec<String> = index.iter().map(|i| i.to_string()).collect();
-        PbLit::pos(self.enc.names.fresh(format!("x[{}][{}]", self.constraint_name, index.join("_"))))
+        PbLit::pos(self.enc.names.fresh(format!(
+            "x[{}][{}]",
+            self.constraint_name,
+            index.join("_")
+        )))
     }
 
     /// A fresh flag numbered by `index` that is true exactly when `ineq`
@@ -213,8 +234,14 @@ pub(crate) fn write_opb(model: &Model, enc: &mut Encoding) -> Result<String, Str
         out.push_str(" ;\n");
     }
     for (constraint, name) in model.constraints().iter().zip(model.constraint_names()) {
-        let mut opb = OpbEncoder { enc: &mut *enc, out: &mut out, constraint_name: name };
-        constraint.encode(&mut opb).map_err(|NotEncodable| name.clone())?;
+        let mut opb = OpbEncoder {
+            enc: &mut *enc,
+            out: &mut out,
+            constraint_name: name,
+        };
+        constraint
+            .encode(&mut opb)
+            .map_err(|NotEncodable| name.clone())?;
     }
     Ok(out)
 }
@@ -242,7 +269,10 @@ mod tests {
                 let (n, signed) = bit_widths(lo, hi);
                 let min = if signed { -(1i64 << n) } else { 0 };
                 let max = (1i64 << n) - 1;
-                assert!(min <= lo && hi <= max, "{lo}..={hi} with {n} bits, signed {signed}");
+                assert!(
+                    min <= lo && hi <= max,
+                    "{lo}..={hi} with {n} bits, signed {signed}"
+                );
             }
         }
     }

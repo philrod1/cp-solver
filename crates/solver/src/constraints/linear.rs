@@ -121,7 +121,12 @@ impl LessEqual {
     fn new(terms: Vec<(VarId, i64)>, cof: i64) -> Self {
         let mins = vec![0; terms.len()];
         let vars = terms.iter().map(|&(x, _)| x).collect();
-        Self { terms, vars, cof, mins }
+        Self {
+            terms,
+            vars,
+            cof,
+            mins,
+        }
     }
 }
 

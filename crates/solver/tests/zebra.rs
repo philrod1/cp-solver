@@ -1,4 +1,3 @@
-
 //! The Zebra puzzle (Life International, 1962), also called Einstein's riddle.
 //!
 //! Five houses in a row, each with a colour, an owner's nationality, a drink,
@@ -13,13 +12,21 @@
 //! The answer is checked by testing every clue directly against the
 //! solution, not by trusting the model.
 
-use solver::{AllDifferent, Cell, Config, Linear, Model, NotEqual, Outcome, Solution, Table, VarId};
+use solver::{
+    AllDifferent, Cell, Config, Linear, Model, NotEqual, Outcome, Solution, Table, VarId,
+};
 
 /// Attribute value names in each category, in a fixed order.
 const COLOURS: [&str; 5] = ["red", "green", "ivory", "yellow", "blue"];
 const NATIONS: [&str; 5] = ["english", "spanish", "ukrainian", "norwegian", "japanese"];
 const DRINKS: [&str; 5] = ["coffee", "tea", "milk", "orange_juice", "water"];
-const SMOKES: [&str; 5] = ["old_gold", "kools", "chesterfield", "lucky_strike", "parliament"];
+const SMOKES: [&str; 5] = [
+    "old_gold",
+    "kools",
+    "chesterfield",
+    "lucky_strike",
+    "parliament",
+];
 const PETS: [&str; 5] = ["dog", "snails", "fox", "horse", "zebra"];
 
 struct Zebra {
@@ -30,7 +37,11 @@ struct Zebra {
 
 impl Zebra {
     fn var(&self, name: &str) -> VarId {
-        self.all.iter().find(|(n, _)| *n == name).unwrap_or_else(|| panic!("no {name}")).1
+        self.all
+            .iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("no {name}"))
+            .1
     }
 
     /// Clue: `a` and `b` are in the same house.
@@ -50,7 +61,12 @@ impl Zebra {
     fn next_to(&mut self, a: &str, b: &str) {
         let (a, b) = (self.var(a), self.var(b));
         let neighbours: Vec<Vec<Cell>> = (1..5)
-            .flat_map(|h| [vec![h.into(), (h + 1).into()], vec![(h + 1).into(), h.into()]])
+            .flat_map(|h| {
+                [
+                    vec![h.into(), (h + 1).into()],
+                    vec![(h + 1).into(), h.into()],
+                ]
+            })
             .collect();
         self.model.post(Table::new(&[a, b], &neighbours));
     }
@@ -132,7 +148,11 @@ fn the_norwegian_drinks_water_and_the_japanese_owns_the_zebra() {
 
     let owner_of = |thing: &str| {
         let h = sol.value(z.var(thing));
-        NATIONS.iter().find(|n| sol.value(z.var(n)) == h).copied().unwrap()
+        NATIONS
+            .iter()
+            .find(|n| sol.value(z.var(n)) == h)
+            .copied()
+            .unwrap()
     };
     assert_eq!(owner_of("water"), "norwegian");
     assert_eq!(owner_of("zebra"), "japanese");

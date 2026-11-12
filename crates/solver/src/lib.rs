@@ -14,7 +14,10 @@ mod search;
 mod store;
 mod trail;
 
-pub use constraints::{AllDifferent, Cell, Constraint, Linear, NotEqual, Table};
+pub use constraints::{
+    AllDifferent, Automaton, AutomatonError, Cell, Constraint, Linear, NotEqual, Table,
+    regular_by_tables,
+};
 pub use model::{DuplicateName, Model, Solution, VarId};
 
 use engine::Engine;
@@ -93,7 +96,8 @@ fn run(
         None => Box::new(NullLogger),
     };
 
-    if let Some(empty) = (0..model.num_vars()).position(|i| model.domains[i].0 > model.domains[i].1) {
+    if let Some(empty) = (0..model.num_vars()).position(|i| model.domains[i].0 > model.domains[i].1)
+    {
         proof.empty_domain(VarId(empty as u32));
         proof.conclude(Conclusion::Unsatisfiable);
         proof.finish()?;
@@ -108,10 +112,16 @@ fn run(
     let mut selector = config.var_order.selector();
 
     let mut count = 0;
-    let end = search::search(&mut store, &mut engine, selector.as_mut(), proof.as_mut(), &mut |solution| {
-        count += 1;
-        on_solution(solution)
-    });
+    let end = search::search(
+        &mut store,
+        &mut engine,
+        selector.as_mut(),
+        proof.as_mut(),
+        &mut |solution| {
+            count += 1;
+            on_solution(solution)
+        },
+    );
     proof.conclude(match end {
         SearchEnd::Stopped(_) => Conclusion::Satisfiable,
         SearchEnd::Exhausted if count == 0 => Conclusion::Unsatisfiable,

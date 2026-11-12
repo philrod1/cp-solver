@@ -45,8 +45,14 @@ impl Constraint for AllDifferent {
                 let flag = opb.indexed_flag(&[i, j]);
                 let diff = opb.linear(&[(1, xi), (-1, xj)]);
                 let shift = i128::from(aj) - i128::from(ai);
-                opb.row(&format!("{i}lt{j}"), &Ineq::le(diff.clone(), -1 + shift).implied_by(!flag));
-                opb.row(&format!("{i}gt{j}"), &Ineq::ge(diff, 1 + shift).implied_by(flag));
+                opb.row(
+                    &format!("{i}lt{j}"),
+                    &Ineq::le(diff.clone(), -1 + shift).implied_by(!flag),
+                );
+                opb.row(
+                    &format!("{i}gt{j}"),
+                    &Ineq::ge(diff, 1 + shift).implied_by(flag),
+                );
             }
         }
         Ok(())

@@ -7,7 +7,7 @@ use std::ops::ControlFlow;
 use crate::engine::Engine;
 use crate::lit::Lit;
 use crate::model::{Solution, VarId};
-use crate::proof::{ProofLogger};
+use crate::proof::ProofLogger;
 use crate::store::DomainStore;
 
 /// Strategy for choosing the next variable to branch on.
@@ -71,7 +71,10 @@ pub(crate) fn search(
                     let decision = Lit::Eq(var, store.domain(var).lower());
                     store.push_level();
                     decisions.push(decision);
-                    if let Some(event) = store.apply(decision).expect("decision value is in the domain") {
+                    if let Some(event) = store
+                        .apply(decision)
+                        .expect("decision value is in the domain")
+                    {
                         engine.notify(var, event);
                     }
                     continue;
@@ -113,7 +116,7 @@ pub(crate) fn search(
 
 #[cfg(test)]
 mod tests {
-    use crate::{solve, Config, Model, NotEqual, Outcome, VarOrder};
+    use crate::{Config, Model, NotEqual, Outcome, VarOrder, solve};
 
     #[test]
     fn pigeonhole_is_unsatisfiable() {
@@ -124,8 +127,14 @@ mod tests {
             m.post(NotEqual::new(v[0], v[1]));
             m.post(NotEqual::new(v[0], v[2]));
             m.post(NotEqual::new(v[1], v[2]));
-            let config = Config { var_order, ..Config::default() };
-            assert!(matches!(solve(&m, &config).unwrap(), Outcome::Unsatisfiable));
+            let config = Config {
+                var_order,
+                ..Config::default()
+            };
+            assert!(matches!(
+                solve(&m, &config).unwrap(),
+                Outcome::Unsatisfiable
+            ));
         }
     }
 

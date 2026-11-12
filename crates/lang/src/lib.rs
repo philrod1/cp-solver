@@ -7,4 +7,4 @@
 pub mod scp;
 pub mod sexpr;
 
-pub use scp::{read_scp, ProbType, ScpError, ScpModel};
+pub use scp::{ProbType, ScpError, ScpModel, read_scp};

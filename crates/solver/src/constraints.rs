@@ -7,11 +7,13 @@
 mod all_different;
 mod linear;
 mod not_equal;
+mod regular;
 mod table;
 
 pub use all_different::AllDifferent;
 pub use linear::Linear;
 pub use not_equal::NotEqual;
+pub use regular::{Automaton, AutomatonError, regular_by_tables};
 pub use table::{Cell, Table};
 
 use std::fmt::Debug;
@@ -68,7 +70,12 @@ impl PropagationContext<'_> {
     }
 
     /// Infer `var != val`.
-    pub(crate) fn remove(&mut self, var: VarId, val: i64, why: Justification) -> Result<(), Conflict> {
+    pub(crate) fn remove(
+        &mut self,
+        var: VarId,
+        val: i64,
+        why: Justification,
+    ) -> Result<(), Conflict> {
         if !self.domain(var).contains(val) {
             return Ok(());
         }
@@ -79,7 +86,12 @@ impl PropagationContext<'_> {
     }
 
     /// Infer `var >= k`.
-    pub(crate) fn set_lower(&mut self, var: VarId, k: i64, why: Justification) -> Result<(), Conflict> {
+    pub(crate) fn set_lower(
+        &mut self,
+        var: VarId,
+        k: i64,
+        why: Justification,
+    ) -> Result<(), Conflict> {
         if k <= self.domain(var).lower() {
             return Ok(());
         }
@@ -90,7 +102,12 @@ impl PropagationContext<'_> {
     }
 
     /// Infer `var <= k`.
-    pub(crate) fn set_upper(&mut self, var: VarId, k: i64, why: Justification) -> Result<(), Conflict> {
+    pub(crate) fn set_upper(
+        &mut self,
+        var: VarId,
+        k: i64,
+        why: Justification,
+    ) -> Result<(), Conflict> {
         if k >= self.domain(var).upper() {
             return Ok(());
         }
@@ -135,7 +152,11 @@ impl PropagationContext<'_> {
                     let (lo, hi) = (d.lower(), d.upper());
                     lits.push(Lit::Ge(x, lo));
                     lits.push(Lit::Lt(x, hi + 1));
-                    lits.extend((lo + 1..hi).filter(|&v| !d.contains(v)).map(|v| Lit::Neq(x, v)));
+                    lits.extend(
+                        (lo + 1..hi)
+                            .filter(|&v| !d.contains(v))
+                            .map(|v| Lit::Neq(x, v)),
+                    );
                 }
                 lits
             }

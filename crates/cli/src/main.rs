@@ -43,7 +43,8 @@ fn run() -> Result<(), String> {
     let source = fs::read_to_string(&model_path)
         .map_err(|e| format!("cannot read {}: {e}", model_path.display()))?;
 
-    let (model, scp) = lang::read_scp(&source).map_err(|e| format!("{}: {e}", model_path.display()))?;
+    let (model, scp) =
+        lang::read_scp(&source).map_err(|e| format!("{}: {e}", model_path.display()))?;
     let solver_error = |e| format!("solver error: {e}");
 
     match scp.prob_type {

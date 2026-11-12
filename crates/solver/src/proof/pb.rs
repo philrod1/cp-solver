@@ -15,7 +15,10 @@ pub(crate) struct PbLit {
 
 impl PbLit {
     pub(crate) fn pos(var: PbVar) -> Self {
-        PbLit { var, negated: false }
+        PbLit {
+            var,
+            negated: false,
+        }
     }
 
     pub(crate) fn var(self) -> PbVar {
@@ -26,7 +29,10 @@ impl PbLit {
 impl std::ops::Not for PbLit {
     type Output = PbLit;
     fn not(self) -> PbLit {
-        PbLit { var: self.var, negated: !self.negated }
+        PbLit {
+            var: self.var,
+            negated: !self.negated,
+        }
     }
 }
 
@@ -64,14 +70,17 @@ impl Ineq {
     }
 
     pub(crate) fn clause(lits: impl IntoIterator<Item = PbLit>) -> Self {
-        Ineq { terms: lits.into_iter().map(|l| (1, l)).collect(), rhs: 1 }
+        Ineq {
+            terms: lits.into_iter().map(|l| (1, l)).collect(),
+            rhs: 1,
+        }
     }
 
     fn min_lhs(&self) -> i128 {
         self.terms.iter().map(|&(c, _)| c.min(0)).sum()
     }
 
-    pub(crate) fn implied_by(mut self, flag:PbLit) -> Self {
+    pub(crate) fn implied_by(mut self, flag: PbLit) -> Self {
         let m = (self.rhs - self.min_lhs()).max(0);
         if m > 0 {
             self.terms.push((m, !flag));
@@ -109,11 +118,14 @@ impl Ineq {
                 terms.push((a, PbLit::pos(var)));
             }
         }
-        Ineq { terms, rhs: self.rhs - constant }
+        Ineq {
+            terms,
+            rhs: self.rhs - constant,
+        }
     }
 
     pub(crate) fn negated(&self) -> Ineq {
-        Ineq::le(self.terms.clone(), self.rhs -1)
+        Ineq::le(self.terms.clone(), self.rhs - 1)
     }
 
     /// Append in OPB syntax, without the final `;`
@@ -148,9 +160,18 @@ mod tests {
     #[test]
     fn writes_opb_syntax() {
         let mut n = Names::default();
-        let (x, y) = (PbLit::pos(n.fresh("x".into())), PbLit::pos(n.fresh("y".into())));
-        assert_eq!(text(&n, &Ineq::ge(vec![(2, x), (-1, !y)], 1)), "2 x -1 ~y >= 1");
-        assert_eq!(text(&n, &Ineq::le(vec![(2, x), (3, y)], 4)), "-2 x -3 y >= -4");
+        let (x, y) = (
+            PbLit::pos(n.fresh("x".into())),
+            PbLit::pos(n.fresh("y".into())),
+        );
+        assert_eq!(
+            text(&n, &Ineq::ge(vec![(2, x), (-1, !y)], 1)),
+            "2 x -1 ~y >= 1"
+        );
+        assert_eq!(
+            text(&n, &Ineq::le(vec![(2, x), (3, y)], 4)),
+            "-2 x -3 y >= -4"
+        );
         assert_eq!(text(&n, &Ineq::clause([x, !y])), "1 x 1 ~y >= 1");
     }
 
@@ -173,9 +194,15 @@ mod tests {
     #[test]
     fn merging_cancels_and_combines() {
         let mut n = Names::default();
-        let (x, y) = (PbLit::pos(n.fresh("x".into())), PbLit::pos(n.fresh("y".into())));
+        let (x, y) = (
+            PbLit::pos(n.fresh("x".into())),
+            PbLit::pos(n.fresh("y".into())),
+        );
         // x - x + 2y >= 1  ->  2y >= 1
-        assert_eq!(text(&n, &Ineq::ge(vec![(1, x), (-1, x), (2, y)], 1)), "2 y >= 1");
+        assert_eq!(
+            text(&n, &Ineq::ge(vec![(1, x), (-1, x), (2, y)], 1)),
+            "2 y >= 1"
+        );
         // x + ~x >= 1  ->  0 >= 0 (always true)
         assert_eq!(text(&n, &Ineq::ge(vec![(1, x), (1, !x)], 1)), ">= 0");
         // 2~x + x >= 2  ->  ~x >= 1 (2~x + 1 - ~x >= 2)
@@ -187,9 +214,14 @@ mod tests {
         // Check every assignment of three variables against a few
         // inequalities with repeats and mixed polarity.
         let mut n = Names::default();
-        let v: Vec<PbLit> = (0..3).map(|i| PbLit::pos(n.fresh(format!("v{i}")))).collect();
+        let v: Vec<PbLit> = (0..3)
+            .map(|i| PbLit::pos(n.fresh(format!("v{i}"))))
+            .collect();
         let cases = [
-            Ineq::ge(vec![(3, v[0]), (-2, !v[0]), (1, v[1]), (4, !v[2]), (-1, v[2])], 2),
+            Ineq::ge(
+                vec![(3, v[0]), (-2, !v[0]), (1, v[1]), (4, !v[2]), (-1, v[2])],
+                2,
+            ),
             Ineq::ge(vec![(1, !v[1]), (1, v[1]), (-5, v[2]), (2, !v[0])], -3),
             Ineq::ge(vec![(-1, !v[0]), (-1, !v[0]), (7, v[0])], 0),
         ];
@@ -197,14 +229,24 @@ mod tests {
             let lhs: i128 = ineq
                 .terms
                 .iter()
-                .map(|&(c, l)| if a[l.var.0 as usize] != l.negated { c } else { 0 })
+                .map(|&(c, l)| {
+                    if a[l.var.0 as usize] != l.negated {
+                        c
+                    } else {
+                        0
+                    }
+                })
                 .sum();
             lhs >= ineq.rhs
         };
         for ineq in &cases {
             for bits in 0..8 {
                 let a = [bits & 1 != 0, bits & 2 != 0, bits & 4 != 0];
-                assert_eq!(value(ineq, a), value(&ineq.merged(), a), "{ineq:?} at {a:?}");
+                assert_eq!(
+                    value(ineq, a),
+                    value(&ineq.merged(), a),
+                    "{ineq:?} at {a:?}"
+                );
             }
         }
     }

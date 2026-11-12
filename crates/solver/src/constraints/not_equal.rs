@@ -40,7 +40,12 @@ impl Constraint for NotEqual {
     }
 
     fn encode(&self, opb: &mut OpbEncoder<'_>) -> Result<(), NotEncodable> {
-        let NotEqual { x, y, x_offset, y_offset } = *self;
+        let NotEqual {
+            x,
+            y,
+            x_offset,
+            y_offset,
+        } = *self;
         let ne = opb.flag("ne");
         // x - y, with the offsets moved to the right-hand side.
         let diff = opb.linear(&[(1, x), (-1, y)]);

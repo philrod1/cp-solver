@@ -107,11 +107,16 @@ impl Model {
             n += 1;
         }
         let name = format!("_{n}");
-        self.post_named(&name, constraint).expect("the name was checked to be free");
+        self.post_named(&name, constraint)
+            .expect("the name was checked to be free");
     }
 
     /// Add a constraint under `name`, which must not already be in use.
-    pub fn post_named(&mut self, name: &str, constraint: impl Constraint + 'static) -> Result<(), DuplicateName> {
+    pub fn post_named(
+        &mut self,
+        name: &str,
+        constraint: impl Constraint + 'static,
+    ) -> Result<(), DuplicateName> {
         if !self.taken.insert(name.to_string()) {
             return Err(DuplicateName(name.to_string()));
         }
@@ -168,7 +173,10 @@ mod tests {
         let (x, y) = (m.int_var(0, 1), m.int_var(0, 1));
         m.post_named("c1", NotEqual::new(x, y)).unwrap();
         m.post(NotEqual::new(x, y));
-        assert_eq!(m.post_named("c1", NotEqual::new(x, y)), Err(DuplicateName("c1".into())));
+        assert_eq!(
+            m.post_named("c1", NotEqual::new(x, y)),
+            Err(DuplicateName("c1".into()))
+        );
         assert_eq!(m.constraint_names(), ["c1", "_2"]);
     }
 

@@ -13,7 +13,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use proptest::prelude::*;
-use solver::{enumerate, solve, Cell, Config, Model, NotEqual, Outcome, Table, VarId, VarOrder};
+use solver::{Config, Model, NotEqual, Outcome, VarId, VarOrder, enumerate, solve};
 
 /// The VeriPB command, if there is one.
 fn veripb() -> Option<&'static str> {
@@ -21,7 +21,10 @@ fn veripb() -> Option<&'static str> {
     FOUND
         .get_or_init(|| {
             let cmd = std::env::var("VERIPB").unwrap_or_else(|_| "veripb".into());
-            let works = Command::new(&cmd).arg("--version").output().is_ok_and(|o| o.status.success());
+            let works = Command::new(&cmd)
+                .arg("--version")
+                .output()
+                .is_ok_and(|o| o.status.success());
             if !works {
                 eprintln!("veripb not found: proofs are written but not checked");
             }
@@ -51,7 +54,13 @@ fn check(stem: &Path) -> Option<String> {
         let text = std::fs::read_to_string(&pbp).unwrap();
         let swapped: String = text
             .lines()
-            .map(|l| if l.starts_with("conclusion ENUMERATION_COMPLETE") { "conclusion NONE ;" } else { l })
+            .map(|l| {
+                if l.starts_with("conclusion ENUMERATION_COMPLETE") {
+                    "conclusion NONE ;"
+                } else {
+                    l
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let older = stem.with_extension("none.pbp");
@@ -66,7 +75,10 @@ fn check(stem: &Path) -> Option<String> {
 }
 
 fn config(name: &str) -> Config {
-    Config { proof: Some(stem(name)), ..Config::default() }
+    Config {
+        proof: Some(stem(name)),
+        ..Config::default()
+    }
 }
 
 fn solx_lines(name: &str) -> usize {
@@ -76,11 +88,18 @@ fn solx_lines(name: &str) -> usize {
 
 /// Enumerate with a proof, check it, and return the number of solutions.
 fn enumerate_checked(name: &str, model: &Model, var_order: VarOrder) -> u64 {
-    let config = Config { var_order, ..config(name) };
+    let config = Config {
+        var_order,
+        ..config(name)
+    };
     let count = enumerate(model, &config, |_| ControlFlow::Continue(())).unwrap();
     assert_eq!(solx_lines(name) as u64, count, "one solx per solution");
     if let Some(verdict) = check(&stem(name)) {
-        let ok = if count == 0 { "s VERIFIED UNSATISFIABLE" } else { "s VERIFIED" };
+        let ok = if count == 0 {
+            "s VERIFIED UNSATISFIABLE"
+        } else {
+            "s VERIFIED"
+        };
         assert!(verdict.starts_with(ok), "{name}: {verdict}");
     }
     count
@@ -92,7 +111,10 @@ fn two_equal_constants_are_unsatisfiable() {
     let mut m = Model::new();
     let (x, y) = (m.int_var_named("X", 1, 1), m.int_var_named("Y", 1, 1));
     m.post(NotEqual::new(x, y));
-    assert!(matches!(solve(&m, &config("ne_unsat")).unwrap(), Outcome::Unsatisfiable));
+    assert!(matches!(
+        solve(&m, &config("ne_unsat")).unwrap(),
+        Outcome::Unsatisfiable
+    ));
     if let Some(verdict) = check(&stem("ne_unsat")) {
         assert_eq!(verdict, "s VERIFIED UNSATISFIABLE");
     }
@@ -100,10 +122,13 @@ fn two_equal_constants_are_unsatisfiable() {
 
 fn pigeonhole(pigeons: usize, holes: i64) -> Model {
     let mut m = Model::new();
-    let p: Vec<VarId> = (0..pigeons).map(|i| m.int_var_named(&format!("p{i}"), 1, holes)).collect();
+    let p: Vec<VarId> = (0..pigeons)
+        .map(|i| m.int_var_named(&format!("p{i}"), 1, holes))
+        .collect();
     for i in 0..pigeons {
         for j in i + 1..pigeons {
-            m.post_named(&format!("p{i}p{j}"), NotEqual::new(p[i], p[j])).unwrap();
+            m.post_named(&format!("p{i}p{j}"), NotEqual::new(p[i], p[j]))
+                .unwrap();
         }
     }
     m
@@ -114,7 +139,10 @@ fn pigeonhole_needs_search_and_backtracking() {
     for (pigeons, holes) in [(3, 2), (4, 3), (5, 4)] {
         for order in [VarOrder::InputOrder, VarOrder::SmallestDomain] {
             let name = format!("php_{pigeons}_{holes}_{order:?}");
-            assert_eq!(enumerate_checked(&name, &pigeonhole(pigeons, holes), order), 0);
+            assert_eq!(
+                enumerate_checked(&name, &pigeonhole(pigeons, holes), order),
+                0
+            );
         }
     }
 }
@@ -122,14 +150,23 @@ fn pigeonhole_needs_search_and_backtracking() {
 #[test]
 fn enumerating_permutations() {
     // n pigeons, n holes: n! solutions.
-    assert_eq!(enumerate_checked("perm_3", &pigeonhole(3, 3), VarOrder::InputOrder), 6);
-    assert_eq!(enumerate_checked("perm_4", &pigeonhole(4, 4), VarOrder::SmallestDomain), 24);
+    assert_eq!(
+        enumerate_checked("perm_3", &pigeonhole(3, 3), VarOrder::InputOrder),
+        6
+    );
+    assert_eq!(
+        enumerate_checked("perm_4", &pigeonhole(4, 4), VarOrder::SmallestDomain),
+        24
+    );
 }
 
 #[test]
 fn stopping_at_the_first_solution_proves_satisfiable() {
     let m = pigeonhole(3, 3);
-    assert!(matches!(solve(&m, &config("perm_decide")).unwrap(), Outcome::Satisfiable(_)));
+    assert!(matches!(
+        solve(&m, &config("perm_decide")).unwrap(),
+        Outcome::Satisfiable(_)
+    ));
     if let Some(verdict) = check(&stem("perm_decide")) {
         assert_eq!(verdict, "s VERIFIED SATISFIABLE");
     }
@@ -140,12 +177,22 @@ fn negative_values_and_offsets() {
     // x + 2 != y, y - 1 != z, x != z over domains with negative values:
     // exercises the sign bit and the offsets in the encoding.
     let mut m = Model::new();
-    let (x, y, z) = (m.int_var_named("x", -3, 0), m.int_var_named("y", -2, 1), m.int_var_named("z", -1, -1));
+    let (x, y, z) = (
+        m.int_var_named("x", -3, 0),
+        m.int_var_named("y", -2, 1),
+        m.int_var_named("z", -1, -1),
+    );
     m.post(NotEqual::with_offsets(x, 2, y, 0));
     m.post(NotEqual::with_offsets(y, -1, z, 0));
     m.post(NotEqual::new(x, z));
-    let expected = brute_force(&[(-3, 0), (-2, 1), (-1, -1)], &[(0, 2, 1, 0), (1, -1, 2, 0), (0, 0, 2, 0)]);
-    assert_eq!(enumerate_checked("negative", &m, VarOrder::InputOrder), expected);
+    let expected = brute_force(
+        &[(-3, 0), (-2, 1), (-1, -1)],
+        &[(0, 2, 1, 0), (1, -1, 2, 0), (0, 0, 2, 0)],
+    );
+    assert_eq!(
+        enumerate_checked("negative", &m, VarOrder::InputOrder),
+        expected
+    );
 }
 
 #[test]
@@ -162,16 +209,6 @@ fn an_empty_domain() {
     let (x, y) = (m.int_var_named("x", 0, 3), m.int_var_named("y", 5, 2));
     m.post(NotEqual::new(x, y));
     assert_eq!(enumerate_checked("empty", &m, VarOrder::InputOrder), 0);
-}
-
-#[test]
-fn constraints_without_an_encoding_are_refused() {
-    let mut m = Model::new();
-    let v: Vec<VarId> = (0..3).map(|_| m.int_var(0, 2)).collect();
-    m.post_named("t", Table::new(&v, &[vec![Cell::Val(0), Cell::Val(1), Cell::Val(2)]])).unwrap();
-    let err = solve(&m, &config("refused")).unwrap_err();
-    assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
-    assert!(err.to_string().contains("'t'"), "{err}");
 }
 
 // ---- random models, against brute force ----
@@ -198,12 +235,12 @@ fn brute_force(domains: &[(i64, i64)], constraints: &[Diff]) -> u64 {
 type Diff = (usize, i64, usize, i64);
 
 fn random_model() -> impl Strategy<Value = (Vec<(i64, i64)>, Vec<Diff>)> {
-    (2usize..=5)
-        .prop_flat_map(|n| {
-            let domains = prop::collection::vec((-4i64..=3, 0i64..=3).prop_map(|(lo, w)| (lo, lo + w)), n);
-            let constraint = (0..n, -2i64..=2, 0..n, -2i64..=2);
-            (domains, prop::collection::vec(constraint, 1..=8))
-        })
+    (2usize..=5).prop_flat_map(|n| {
+        let domains =
+            prop::collection::vec((-4i64..=3, 0i64..=3).prop_map(|(lo, w)| (lo, lo + w)), n);
+        let constraint = (0..n, -2i64..=2, 0..n, -2i64..=2);
+        (domains, prop::collection::vec(constraint, 1..=8))
+    })
 }
 
 proptest! {
