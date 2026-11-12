@@ -1,0 +1,5 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+
+cc 1fbc78f7e7962284dc7ec3b8920a07f3af72cb78661747bd728710fb8c04d2c1 # shrinks to (domains, constraints) = ([(0, 0)], [([(0, 0)], 1, true)]), input_order = false

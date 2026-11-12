@@ -15,7 +15,7 @@ mod store;
 mod trail;
 
 pub use constraints::{
-    AllDifferent, Automaton, AutomatonError, Cell, Constraint, Linear, NotEqual, Table,
+    AllDifferent, Automaton, AutomatonError, Cell, Constraint, Linear, NotEqual, Regular, Table,
     regular_by_tables,
 };
 pub use model::{DuplicateName, Model, Solution, VarId};

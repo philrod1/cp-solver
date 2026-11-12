@@ -10,7 +10,7 @@ use std::ops::ControlFlow;
 use std::path::Path;
 use std::process::Command;
 
-use lang::{ProbType, ScpError, read_scp};
+use lang::{read_scp, ProbType, ScpError};
 use solver::Config;
 
 /// What happened to one document.
@@ -42,11 +42,7 @@ fn run_with(text: &str, config: &Config) -> Result<Run, String> {
         ProbType::Minimize(_) | ProbType::Maximize(_) => return Ok(Run::Optimisation),
     };
     let count = solver::enumerate(&model, config, |_| {
-        if stop_after_first {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
+        if stop_after_first { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
     })
     .map_err(|e| e.to_string())?;
     Ok(Run::Solutions(count))
@@ -67,10 +63,7 @@ pub enum Proof {
 /// with VeriPB (`$VERIPB`, or `veripb` on the PATH). A proof VeriPB
 /// rejects is an error.
 pub fn run_with_proof(text: &str, stem: &Path) -> Result<Proof, String> {
-    let config = Config {
-        proof: Some(stem.to_path_buf()),
-        ..Config::default()
-    };
+    let config = Config { proof: Some(stem.to_path_buf()), ..Config::default() };
     match run_with(text, &config) {
         Ok(Run::Solutions(_)) => {}
         Ok(_) => return Ok(Proof::NotWritten),
@@ -82,9 +75,13 @@ pub fn run_with_proof(text: &str, stem: &Path) -> Result<Proof, String> {
     let Ok(out) = Command::new(cmd).arg(file("opb")).arg(file("pbp")).output() else {
         return Ok(Proof::NotChecked);
     };
-    let output =
-        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
-    match output.lines().find(|l| l.starts_with("s VERIFIED")) {
+    let output = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    // A proof with unchecked assertions (`a` steps, from linear for now) is
+    // accepted as `s UNDER ASSERTIONS ...`, which newer VeriPB says for one.
+    let proof = std::fs::read_to_string(file("pbp")).map_err(|e| e.to_string())?;
+    let asserted = proof.lines().any(|l| l.starts_with("a "));
+    let accepted = |l: &&str| l.starts_with("s VERIFIED") || (asserted && l.starts_with("s UNDER ASSERTIONS"));
+    match output.lines().find(accepted) {
         Some(verdict) => Ok(Proof::Verified(verdict.to_string())),
         None => Err(format!("VeriPB rejected the proof:\n{output}")),
     }
@@ -116,22 +113,13 @@ pub struct Tally {
 
 impl Tally {
     pub fn report(&self, what: &str) {
-        let total = self.passed
-            + self.unsupported.values().sum::<u64>()
-            + self.optimisation
-            + self.failures.len() as u64;
-        println!(
-            "\n== {what}: {} / {total} documents solved correctly",
-            self.passed
-        );
+        let total = self.passed + self.unsupported.values().sum::<u64>() + self.optimisation + self.failures.len() as u64;
+        println!("\n== {what}: {} / {total} documents solved correctly", self.passed);
         if self.optimisation > 0 {
             println!("   {} skipped: optimisation", self.optimisation);
         }
         if self.skipped_rows > 0 {
-            println!(
-                "   {} skipped: incomplete rows in the input",
-                self.skipped_rows
-            );
+            println!("   {} skipped: incomplete rows in the input", self.skipped_rows);
         }
         if !self.unsupported.is_empty() {
             println!("   skipped as unsupported, by keyword:");

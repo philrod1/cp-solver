@@ -190,6 +190,12 @@ impl ProofLogger for VeriPb {
         self.emit_step(rule, &clause);
     }
 
+    fn rup(&mut self, reason: &[Lit], clause: &[PbLit]) {
+        let mut lits: Vec<PbLit> = reason.iter().map(|&r| !self.atom(r)).collect();
+        lits.extend_from_slice(clause);
+        self.emit_step(Rule::Rup, &Ineq::clause(lits));
+    }
+
     fn backtrack(&mut self, decisions: &[Lit]) {
         // With no decisions the conflict is at the root
         // The conclusion writes the empty clause for that

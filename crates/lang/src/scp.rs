@@ -22,8 +22,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use solver::{
-    AllDifferent, Automaton, Cell, Constraint, Linear, Model, NotEqual, Table,
-    VarId, regular_by_tables,
+    AllDifferent, Automaton, Cell, Constraint, Linear, Model, NotEqual, Table, VarId,
+    regular_by_tables,
 };
 
 use crate::sexpr::{self, SExpr, SExprError};

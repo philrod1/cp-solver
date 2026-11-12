@@ -13,7 +13,7 @@ mod table;
 pub use all_different::AllDifferent;
 pub use linear::Linear;
 pub use not_equal::NotEqual;
-pub use regular::{Automaton, AutomatonError, regular_by_tables};
+pub use regular::{Automaton, AutomatonError, Regular, regular_by_tables};
 pub use table::{Cell, Table};
 
 use std::fmt::Debug;
@@ -22,7 +22,7 @@ use crate::domain::{Conflict, SparseDomain};
 use crate::engine::Engine;
 use crate::lit::Lit;
 use crate::model::VarId;
-use crate::proof::{Justification, NotEncodable, OpbEncoder, ProofLogger, Reason};
+use crate::proof::{Justification, NotEncodable, OpbEncoder, PbLit, ProofLogger, Reason};
 use crate::store::{DomainStore, Event};
 
 /// A constraint as stated in a model.
@@ -142,7 +142,7 @@ impl PropagationContext<'_> {
         }
     }
 
-    fn reason_lits(&self, reason: Reason) -> Vec<Lit> {
+    pub(crate) fn reason_lits(&self, reason: Reason) -> Vec<Lit> {
         match reason {
             Reason::Lits(lits) => lits.to_vec(),
             Reason::Domains(vars) => {
@@ -161,6 +161,19 @@ impl PropagationContext<'_> {
                 lits
             }
         }
+    }
+
+    /// Whether a proof is being written. Propagators that log steps of
+    /// their own (see [`Self::rup`]) check this first, to skip the work.
+    pub(crate) fn is_logging(&self) -> bool {
+        self.proof.is_logging()
+    }
+
+    /// Log "`reason` ⇒ at least one of `clause`", checked by RUP. For a
+    /// propagator whose reasoning needs intermediate facts about its own
+    /// encoding's flags, logged before the inference that uses them.
+    pub(crate) fn rup(&mut self, reason: &[Lit], clause: &[PbLit]) {
+        self.proof.rup(reason, clause);
     }
 }
 

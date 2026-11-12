@@ -14,7 +14,7 @@ mod pb;
 mod veripb;
 
 pub use opb::{NotEncodable, OpbEncoder};
-pub(crate) use pb::Ineq;
+pub(crate) use pb::{Ineq, PbLit};
 pub(crate) use veripb::VeriPb;
 
 use std::io;
@@ -82,6 +82,11 @@ pub(crate) trait ProofLogger {
     fn is_logging(&self) -> bool {
         false
     }
+
+    /// `reason` implies at least one of `clause`, by RUP. For constraints
+    /// whose reasoning involves their own encoding's variables (flags), which
+    /// a [`Lit`] can't name.
+    fn rup(&mut self, _reason: &[Lit], _clause: &[PbLit]) {}
 
     /// A propagator is about to make `lit` true because of `reason`.
     fn inference(&mut self, _lit: Lit, _rule: Rule, _reason: &[Lit]) {}
