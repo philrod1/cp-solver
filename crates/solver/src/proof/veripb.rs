@@ -1,4 +1,35 @@
-//! Writes the VeriPB output files OPB and PBP
+//! Writes the OPB model and a VeriPB proof against it.
+//!
+//! The proof talks about literals `x ≥ v` and `x = v`, each a Boolean
+//! *atom* defined in terms of the bits:
+//!
+//! - `i[x][geV] ⇔ Σ bits ≥ V`, as two halves labelled `@i[x][geV][r]`
+//!   (atom ⇒ sum) and `@i[x][geV][f]` (sum ⇒ atom);
+//! - `i[x][eqV] ⇔ i[x][geV] ∧ ¬i[x][geV+1]`, likewise `[r]` and `[f]`.
+//!
+//! Some atoms are already defined in the OPB, because a constraint's rows
+//! use them (a table's rows are conjunctions of `x = v`). The proof adopts
+//! those when it starts. Any other atom it needs, it defines itself the
+//! first time, with the same two halves as `red` steps.
+//!
+//! Each new `ge` atom also gets short clauses that make the atoms behave
+//! like an order encoding, as GCS does (the thesis's Inv-Bound and
+//! Inv-Chain):
+//!
+//! - *pins*: outside the declared bounds the atom is a constant, and says
+//!   so as a unit clause. These are needed: "some value is taken" can't be
+//!   shown by RUP without a unit to start the cascade through the `eq`
+//!   definitions.
+//! - *links* to its nearest defined neighbours (`x ≥ 5 ⇒ x ≥ 3`). These
+//!   turn out not to be needed by VeriPB yet: unit propagation on two
+//!   opposing bounds over the same bits (`Σ ≥ a`, `Σ ≤ b`, `a > b`) always
+//!   finds the conflict. But they make those facts two-literal clauses
+//!   rather than propagation through two long sums, and they will matter
+//!   once reasons start with bounds that must be *derived* from tighter
+//!   ones.
+//!
+//! Both are derived by adding two lines and saturating. Inferences,
+//! decisions and solutions are then all written in atoms.
 
 use std::fmt::Write as _;
 use std::fs::{self, File};
@@ -122,13 +153,19 @@ impl VeriPb {
         atom
     }
 
-    /// Pin and link a newly defined atom `x ≥ v`, and record it.
+    /// Pin and link a newly defined atom `x ≥ v`, and record it. Atoms the
+    /// OPB defined come straight here; others come via `ge`, after their
+    /// `red` definitions.
     fn place_ge(&mut self, x: VarId, v: i64, atom: PbLit) {
         let int = self.enc.int(x);
         let label = int.label(&format!("ge{v}"));
         let (lb, ub) = (int.label("lb"), int.label("ub"));
         let (lo, hi) = (int.lo, int.hi);
 
+        // Outside the declared bounds the atom is a constant. Adding its
+        // definition to the bound row leaves only the atom: e.g. for v ≤ lo,
+        // (-Σ + M·atom ≥ 1 - v) + (Σ ≥ lo) is M·atom ≥ lo - v + 1 ≥ 1.
+        // For v > hi, [r] plus the upper bound row leaves ¬atom likewise.
         if v <= lo {
             self.emit_text(&format!("pol @{label}[f] @{lb} + s ;"));
         }
@@ -136,6 +173,9 @@ impl VeriPb {
             self.emit_text(&format!("pol @{label}[r] @{ub} + s ;"));
         }
 
+        // Link to the neighbours. For u < v, x ≥ v ⇒ x ≥ u comes from
+        // (Σ + M·¬ge_v ≥ v) + (-Σ + M'·ge_u ≥ 1 - u), which saturates to
+        // the clause ¬ge_v ∨ ge_u.
         let atoms = &self.atoms[x.index()].ge;
         let below = atoms.range(..v).next_back().map(|(&u, _)| u);
         let above = atoms.range(v + 1..).next().map(|(&w, _)| w);

@@ -1,3 +1,28 @@
+//! Regular: a sequence of variables spells a word that a finite automaton
+//! accepts.
+//!
+//! Two ways to post it:
+//!
+//! - [`Regular`], a constraint with its own propagator (Pesant 2004). It
+//!   unrolls the automaton into layers, one per position, and keeps a value
+//!   only if it labels an edge on some path from the start state to an
+//!   accepting state. Its proofs work in terms of state flags; see
+//!   [`Regular::encode`] and the propagator.
+//! - [`regular_by_tables`], a decomposition into tables over new state
+//!   variables q₀ … qₙ:
+//!
+//!   ```text
+//!   q₀ = 0                       the start state
+//!   Table(qᵢ, xᵢ, qᵢ₊₁)           one row per transition (q, v, δ(q, v))
+//!   qₙ ∈ accepting states
+//!   ```
+//!
+//!   The variables form a chain, so propagating every table completely
+//!   also propagates the whole constraint completely: it prunes exactly as
+//!   much as `Regular` (when no variable repeats), only more slowly. That
+//!   makes it the reference `Regular` is tested against. Tables have a
+//!   proof encoding, so it is proof-logged too.
+
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -120,6 +145,9 @@ type Flags = Arc<Mutex<Vec<Vec<PbLit>>>>;
 pub struct Regular {
     vars: Vec<VarId>,
     automaton: Automaton,
+    /// The state flags, shared by the encoding and the propagator: `encode`
+    /// creates them, and the propagator names them in its proof steps.
+    /// Empty when no proof is being written. GCS calls this the bridge.
     flags: Flags,
 }
 
@@ -251,11 +279,20 @@ impl Propagator for Prop {
         self.vars.iter().map(|&x| (x, Event::Domain)).collect()
     }
 
+    /// Layer `i` holds the states the automaton could be in after reading
+    /// `i` values, and an edge from layer `i` to `i + 1` is a transition
+    /// on a value still in `xᵢ`'s domain.
+    ///
     /// 1. Forward: which states can be reached from the start?
     /// 2. Backward: which of those can still reach an accepting state at
     ///    the end? An edge between two such states is on a full path, so
     ///    its value is supported at its position.
     /// 3. Remove every value with no support.
+    ///
+    /// A variable that appears at several positions loses a value as soon
+    /// as one position doesn't support it, which can leave other positions
+    /// short of support; the engine wakes this propagator again for its
+    /// own removals, so the next call deals with them.
     fn propagate(&mut self, ctx: &mut PropagationContext<'_>) -> Result<(), Conflict> {
         let (n, k) = (self.vars.len(), self.automaton.num_states());
 

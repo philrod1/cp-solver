@@ -39,6 +39,12 @@ impl Constraint for NotEqual {
         }));
     }
 
+    /// As GCS writes it: a flag `ne` choosing which side is bigger.
+    ///
+    /// ```text
+    /// @c[name][gt]   ne ⇒ (x + a) - (y + b) ≥ 1
+    /// @c[name][lt]  ¬ne ⇒ (x + a) - (y + b) ≤ -1
+    /// ```
     fn encode(&self, opb: &mut OpbEncoder<'_>) -> Result<(), NotEncodable> {
         let NotEqual {
             x,

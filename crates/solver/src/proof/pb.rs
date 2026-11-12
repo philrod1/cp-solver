@@ -80,6 +80,9 @@ impl Ineq {
         self.terms.iter().map(|&(c, _)| c.min(0)).sum()
     }
 
+    /// `flag ⇒ self`, written as `self + M·¬flag` with `M` just big enough
+    /// that the inequality holds whatever the other literals are when the
+    /// flag is false.
     pub(crate) fn implied_by(mut self, flag: PbLit) -> Self {
         let m = (self.rhs - self.min_lhs()).max(0);
         if m > 0 {
@@ -88,6 +91,11 @@ impl Ineq {
         self
     }
 
+    /// The same inequality with each variable appearing at most once.
+    /// A variable that appears with both signs (`x - x`, or `ℓ` and `¬ℓ`)
+    /// is combined, using `¬ℓ = 1 - ℓ`. Each variable keeps the polarity
+    /// it first appeared with, so an inequality with no repeats comes back
+    /// unchanged.
     pub(crate) fn merged(&self) -> Ineq {
         // Net coefficient on the literal
         let mut order: Vec<PbVar> = Vec::new();
