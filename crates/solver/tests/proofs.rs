@@ -325,7 +325,7 @@ fn regular_nonogram_row() {
 }
 
 #[test]
-fn regular_needs_helpers_for_forward_deaths() {
+fn regular_with_several_states_in_a_layer() {
     // The hand-checked example: A goes to B or C on 0 or 1; B and C loop on
     // 0 and 1 and go to D on 2; D (accepting) loops on 0. Over {0, 1, 2},
     // reaching D at layer 2 needs X1 = 2, with two states behind it.
@@ -351,6 +351,32 @@ fn regular_needs_helpers_for_forward_deaths() {
         assert_eq!(
             enumerate_checked(&format!("regular_helpers_{order:?}"), &m, order),
             expected
+        );
+    }
+}
+
+#[test]
+fn regular_nondeterministic() {
+    // The third symbol from the end is 1: state 0 guesses which 1 it is.
+    let edges = [
+        (0, 0, 0),
+        (0, 1, 0),
+        (0, 1, 1),
+        (1, 0, 2),
+        (1, 1, 2),
+        (2, 0, 3),
+        (2, 1, 3),
+    ];
+    let a = Automaton::new(4, &edges, &[3]).unwrap();
+    for order in [VarOrder::InputOrder, VarOrder::SmallestDomain] {
+        let mut m = Model::new();
+        let x: Vec<VarId> = (0..5)
+            .map(|i| m.int_var_named(&format!("x{i}"), 0, 1))
+            .collect();
+        m.post_named("r", Regular::new(&x, a.clone())).unwrap();
+        assert_eq!(
+            enumerate_checked(&format!("regular_nfa_{order:?}"), &m, order),
+            16
         );
     }
 }
@@ -507,17 +533,18 @@ proptest! {
     fn random_regular_models(
         (domains, k, table, accepting) in domains(0..=4).prop_flat_map(|d| {
             (1usize..=4).prop_flat_map(move |k| {
-                let edge = prop::option::weighted(0.6, 0..k);
-                (Just(d.clone()), Just(k), prop::collection::vec(prop::collection::vec(edge, 8), k), prop::collection::vec(any::<bool>(), k))
+                let targets = prop::collection::vec(0..k, 0..=2);
+                (Just(d.clone()), Just(k), prop::collection::vec(prop::collection::vec(targets, 8), k), prop::collection::vec(any::<bool>(), k))
             })
         }),
         input_order: bool,
     ) {
-        // Symbols -4..=3, the same range the domains come from.
+        // Symbols -4..=3, the same range the domains come from, each with
+        // up to two targets.
         let edges: Vec<(usize, i64, usize)> = table
             .iter()
             .enumerate()
-            .flat_map(|(q, row)| row.iter().enumerate().filter_map(move |(s, t)| t.map(|t| (q, s as i64 - 4, t))))
+            .flat_map(|(q, row)| row.iter().enumerate().flat_map(move |(s, ts)| ts.iter().map(move |&t| (q, s as i64 - 4, t))))
             .collect();
         let finals: Vec<usize> = (0..k).filter(|&q| accepting[q]).collect();
         let automaton = Automaton::new(k, &edges, &finals).unwrap();
