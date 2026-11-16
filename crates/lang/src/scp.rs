@@ -415,7 +415,8 @@ fn parse_integer(a: &str) -> Option<i64> {
 
 /// A `regular` constraint's automaton, from GCS's form: `nstates`, then one
 /// list of `(symbol target)` edges per state in order, then the accepting
-/// states. The start state is 0. Only deterministic automata are accepted.
+/// states. The start state is 0. A state may list several edges on the
+/// same symbol.
 fn automaton(num_states: &SExpr, edges: &SExpr, finals: &SExpr) -> Result<Automaton, String> {
     let state = |e: &SExpr, what: &str| -> Result<usize, String> {
         let q = integer(e, what).map_err(|e| e.to_string())?;

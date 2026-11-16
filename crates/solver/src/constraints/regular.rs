@@ -1,5 +1,7 @@
 //! Regular: a sequence of variables spells a word that a finite automaton
-//! accepts.
+//! accepts. The automaton may be nondeterministic: a state can have several
+//! transitions on the same symbol, and a word is accepted when some run
+//! over it ends in an accepting state.
 //!
 //! Two ways to post it:
 //!
@@ -13,7 +15,7 @@
 //!
 //!   ```text
 //!   q₀ = 0                       the start state
-//!   Table(qᵢ, xᵢ, qᵢ₊₁)           one row per transition (q, v, δ(q, v))
+//!   Table(qᵢ, xᵢ, qᵢ₊₁)           one row per transition (q, v, t), t ∈ δ(q, v)
 //!   qₙ ∈ accepting states
 //!   ```
 //!
@@ -21,7 +23,9 @@
 //!   also propagates the whole constraint completely: it prunes exactly as
 //!   much as `Regular` (when no variable repeats), only more slowly. That
 //!   makes it the reference `Regular` is tested against. Tables have a
-//!   proof encoding, so it is proof-logged too.
+//!   proof encoding, so it is proof-logged too. The state variables hold
+//!   one run, so with a nondeterministic automaton a word with several
+//!   accepting runs is several solutions.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -37,6 +41,8 @@ use crate::store::Event;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Automaton {
+    /// Each state's `(symbol, target)` transitions, sorted. A symbol can
+    /// have several targets.
     transitions: Vec<Vec<(i64, usize)>>,
     accepting: Vec<bool>,
 }
@@ -46,7 +52,6 @@ pub struct Automaton {
 pub enum AutomatonError {
     NoStates,
     NoSuchState(usize),
-    NonDeterministic { state: usize, symbol: i64 },
 }
 
 impl fmt::Display for AutomatonError {
@@ -54,9 +59,6 @@ impl fmt::Display for AutomatonError {
         match self {
             AutomatonError::NoStates => write!(f, "no state for this automaton"),
             AutomatonError::NoSuchState(q) => write!(f, "no state {q}"),
-            AutomatonError::NonDeterministic { state, symbol } => {
-                write!(f, "state {state} has multiple transitions on {symbol}")
-            }
         }
     }
 }
@@ -83,15 +85,9 @@ impl Automaton {
         for &(from, symbol, to) in transitions {
             table[state(from)?].push((symbol, state(to)?));
         }
-        for (q, edges) in table.iter_mut().enumerate() {
+        for edges in &mut table {
             edges.sort_unstable();
             edges.dedup();
-            if let Some(pair) = edges.windows(2).find(|w| w[0].0 == w[1].0) {
-                return Err(AutomatonError::NonDeterministic {
-                    state: q,
-                    symbol: pair[0].0,
-                });
-            }
         }
         let mut is_accepting = vec![false; num_states];
         for &q in accepting {
@@ -107,22 +103,35 @@ impl Automaton {
         self.transitions.len()
     }
 
-    pub fn next(&self, state: usize, symbol: i64) -> Option<usize> {
+    /// The states `state` moves to on `symbol`: none, one, or several.
+    pub fn targets(&self, state: usize, symbol: i64) -> impl Iterator<Item = usize> + '_ {
         let edges = &self.transitions[state];
-        edges
-            .binary_search_by_key(&symbol, |&(s, _)| s)
-            .ok()
-            .map(|i| edges[i].1)
+        let first = edges.partition_point(|&(s, _)| s < symbol);
+        edges[first..]
+            .iter()
+            .take_while(move |&&(s, _)| s == symbol)
+            .map(|&(_, t)| t)
     }
 
     pub fn is_accepting(&self, state: usize) -> bool {
         self.accepting[state]
     }
 
+    /// Whether some run over `word` ends in an accepting state.
     pub fn accepts(&self, word: &[i64]) -> bool {
-        word.iter()
-            .try_fold(0, |q, &symbol| self.next(q, symbol))
-            .is_some_and(|q| self.is_accepting(q))
+        let k = self.num_states();
+        let mut current = vec![false; k];
+        current[0] = true;
+        for &symbol in word {
+            let mut next = vec![false; k];
+            for q in (0..k).filter(|&q| current[q]) {
+                for t in self.targets(q, symbol) {
+                    next[t] = true;
+                }
+            }
+            current = next;
+        }
+        (0..k).any(|q| current[q] && self.is_accepting(q))
     }
 
     /// The `(symbol, target)` transitions leaving `state`, by symbol.
@@ -138,7 +147,8 @@ impl Automaton {
     }
 }
 
-/// `flags[i][q]`: "after reading `i` values, the automaton is in state `q`".
+/// `flags[i][q]`: "after reading `i` values, the automaton can be in state
+/// `q`".
 type Flags = Arc<Mutex<Vec<Vec<PbLit>>>>;
 
 #[derive(Clone, Debug)]
@@ -170,31 +180,31 @@ impl Constraint for Regular {
         }));
     }
 
-    /// As GCS writes it, with a flag `x[name][i_q]` for each layer `i` and
-    /// state `q`:
+    /// With a flag `x[name][i_q]` for each layer `i` and state `q`, true
+    /// exactly when the automaton can be in `q` after reading `i` values:
     ///
     /// ```text
-    /// @c[name][s{i}al1]     some state in layer i
-    /// @c[name][s{i}am1]     at most one state in layer i
-    /// @c[name][start]       state 0 in layer 0
-    /// @c[name][accept]      an accepting state in layer n
-    /// @c[name][t{i}_{q}_{v}]  in q at layer i ∧ xᵢ = v ⇒ in δ(q, v) at layer i + 1
-    ///                       (or ⇒ false, when q has no transition on v)
+    /// @c[name][start]         state 0, and no other, in layer 0
+    /// @c[name][accept]        an accepting state in layer n
+    /// @c[name][f{i}_{q}_{v}]  in q at layer i ∧ xᵢ = v ⇒ in every state of δ(q, v)
+    ///                         at layer i + 1
+    /// @c[name][b{i}_{t}_{v}]  in t at layer i + 1 ∧ xᵢ = v ⇒ in some p at layer i
+    ///                         with t ∈ δ(p, v)
     /// ```
     ///
-    /// for every value `v` in `xᵢ`'s declared domain.
+    /// for every value `v` in `xᵢ`'s declared domain (`f` rows only where
+    /// δ(q, v) isn't empty). Fixing the values fixes every flag, so each
+    /// solution has exactly one assignment to them.
     fn encode(&self, opb: &mut OpbEncoder<'_>) -> Result<(), NotEncodable> {
         let (n, k) = (self.vars.len(), self.automaton.num_states());
         let flags: Vec<Vec<PbLit>> = (0..=n)
             .map(|i| (0..k).map(|q| opb.indexed_flag(&[i, q])).collect())
             .collect();
 
-        for (i, layer) in flags.iter().enumerate() {
-            opb.row(&format!("s{i}al1"), &Ineq::clause(layer.iter().copied()));
-            let at_most_one = layer.iter().map(|&f| (1, f)).collect();
-            opb.row(&format!("s{i}am1"), &Ineq::le(at_most_one, 1));
-        }
-        opb.row("start", &Ineq::clause([flags[0][0]]));
+        let start = (0..k)
+            .map(|q| (1, if q == 0 { flags[0][q] } else { !flags[0][q] }))
+            .collect();
+        opb.row("start", &Ineq::ge(start, k as i128));
         let accepting = (0..k)
             .filter(|&q| self.automaton.is_accepting(q))
             .map(|q| flags[n][q]);
@@ -202,14 +212,27 @@ impl Constraint for Regular {
 
         for (i, &x) in self.vars.iter().enumerate() {
             let (lo, hi) = opb.declared(x);
-            for q in 0..k {
-                for v in lo..=hi {
-                    let is_v = opb.eq(x, v);
-                    let mut clause = vec![!flags[i][q], !is_v];
-                    if let Some(target) = self.automaton.next(q, v) {
-                        clause.push(flags[i + 1][target]);
+            for v in lo..=hi {
+                let is_v = opb.eq(x, v);
+                let mut preds = vec![Vec::new(); k];
+                for q in 0..k {
+                    let targets: Vec<usize> = self.automaton.targets(q, v).collect();
+                    if targets.is_empty() {
+                        continue;
                     }
-                    opb.row(&format!("t{i}_{q}_{v}"), &Ineq::clause(clause));
+                    for &t in &targets {
+                        preds[t].push(q);
+                    }
+                    let all = targets.iter().map(|&t| (1, flags[i + 1][t])).collect();
+                    let row = Ineq::ge(all, targets.len() as i128)
+                        .implied_by(flags[i][q])
+                        .implied_by(is_v);
+                    opb.row(&format!("f{i}_{q}_{v}"), &row);
+                }
+                for (t, ps) in preds.iter().enumerate() {
+                    let some = ps.iter().map(|&p| flags[i][p]);
+                    let row = Ineq::clause([!flags[i + 1][t], !is_v].into_iter().chain(some));
+                    opb.row(&format!("b{i}_{t}_{v}"), &row);
                 }
             }
         }
@@ -225,48 +248,55 @@ struct Prop {
     flags: Flags,
 }
 
-impl Prop {
-    /// Log every dead state, as "reason => not in state q at layer i", in an
-    /// order where each line is RUP given the ones before it.
-    ///
-    /// 1. Forward deaths (unreachable states), from the first layer on.
-    ///    Unit propagation can't reason "whichever state the automaton was
-    ///    in at the layer before", so each one is preceded by a helper per
-    ///    reachable predecessor `p`: "in `t` at layer i + 1 => not in `p` at
-    ///    layer i". Each helper is RUP: assume both, and every value of xi
-    ///    leads from `p` somewhere other than `t`. The helpers are only
-    ///    needed when layer i has two or more reachable states and xᵢ has two
-    ///    or more values, but they are always correct.
-    /// 2. Backward deaths (reachable states that can't finish), from the
-    ///    last layer back. Assume the state: every value of xi leads to a
-    ///    state already known to be dead.
-    fn log_dead_states(
-        &self,
-        ctx: &mut PropagationContext<'_>,
-        reason: &[Lit],
-        reach: &[Vec<bool>],
-        alive: &[Vec<bool>],
-    ) {
-        let flags = self.flags.lock().unwrap();
-        if flags.is_empty() {
-            return; // no encoding was written, so there are no flags to name
+/// The states marked in `layer`.
+fn marked(layer: &[bool]) -> impl Iterator<Item = usize> + '_ {
+    (0..layer.len()).filter(|&q| layer[q])
+}
+
+/// Log "reason => not in state t at layer i" for every unreachable state,
+/// from layer 1 on (layer 0 is the `start` row). Each is RUP: assume it,
+/// and its `b` rows rule out every value of xᵢ₋₁, since each one would
+/// need a predecessor that is already ruled out.
+fn log_unreachable(
+    ctx: &mut PropagationContext<'_>,
+    reason: &[Lit],
+    flags: &[Vec<PbLit>],
+    reach: &[Vec<bool>],
+) {
+    for i in 1..reach.len() {
+        for t in (0..reach[i].len()).filter(|&t| !reach[i][t]) {
+            ctx.rup(reason, &[!flags[i][t]]);
         }
-        let k = self.automaton.num_states();
-        for i in 0..reach.len() {
-            for t in (0..k).filter(|&t| !reach[i][t]) {
-                if i > 0 {
-                    for p in (0..k).filter(|&p| reach[i - 1][p]) {
-                        ctx.rup(reason, &[!flags[i][t], !flags[i - 1][p]]);
-                    }
-                }
-                ctx.rup(reason, &[!flags[i][t]]);
-            }
+    }
+}
+
+/// Log "reason => in some alive state at layer j", for each layer from the
+/// one before last down to `lowest`. At the last layer this is the `accept`
+/// row once the unreachable states are out.
+///
+/// A dead state can still be reachable, so its flag can be true in a
+/// solution; the argument is about the alive states as a group. Before the
+/// lemma for layer j, a helper for each alive t at layer j + 1: "in some
+/// alive state at layer j, or not in t at layer j + 1". Each is RUP: assume
+/// the opposite, and every value of xⱼ that leads into t from a reachable
+/// state leads from an alive one, so its `b` row rules it out. The lemma is
+/// then RUP from the helpers and the lemma for layer j + 1.
+fn log_alive_layers(
+    ctx: &mut PropagationContext<'_>,
+    reason: &[Lit],
+    flags: &[Vec<PbLit>],
+    alive: &[Vec<bool>],
+    lowest: usize,
+) {
+    let n = alive.len() - 1;
+    for j in (lowest..n).rev() {
+        let some_alive: Vec<PbLit> = marked(&alive[j]).map(|q| flags[j][q]).collect();
+        for t in marked(&alive[j + 1]) {
+            let mut clause = some_alive.clone();
+            clause.push(!flags[j + 1][t]);
+            ctx.rup(reason, &clause);
         }
-        for i in (0..reach.len()).rev() {
-            for q in (0..k).filter(|&q| reach[i][q] && !alive[i][q]) {
-                ctx.rup(reason, &[!flags[i][q]]);
-            }
-        }
+        ctx.rup(reason, &some_alive);
     }
 }
 
@@ -344,20 +374,41 @@ impl Propagator for Prop {
         // One reason for every step of this call, taken before anything
         // changes: everything known about the sequence now.
         let reason = if ctx.is_logging() {
-            let reason = ctx.reason_lits(Reason::Domains(&self.vars));
-            self.log_dead_states(ctx, &reason, &reach, &alive);
-            reason
+            ctx.reason_lits(Reason::Domains(&self.vars))
         } else {
             Vec::new()
         };
-        // With the dead states logged, each step is RUP: assume the opposite
-        // and every state in some layer is ruled out.
+        let guard = self.flags.lock().unwrap();
+        // No flags means no encoding was written, so there's nothing to name.
+        let flags = (ctx.is_logging() && !guard.is_empty()).then_some(guard.as_slice());
         let why = Justification::Rup(Reason::Lits(&reason));
+
+        if let Some(flags) = flags {
+            log_unreachable(ctx, &reason, flags, &reach);
+        }
         if dead_end {
+            // No accepting state is reachable, so the `accept` row is empty.
             return ctx.fail(why);
         }
-        for (&x, values) in self.vars.iter().zip(&unsupported) {
+        if let Some(flags) = flags {
+            let first = unsupported.iter().position(|u| !u.is_empty()).unwrap();
+            log_alive_layers(ctx, &reason, flags, &alive, first + 1);
+        }
+        for (i, (&x, values)) in self.vars.iter().zip(&unsupported).enumerate() {
             for &v in values {
+                if !ctx.domain(x).contains(v) {
+                    continue; // already removed at an earlier position
+                }
+                // Assume xᵢ = v: then no alive state at layer i + 1 is
+                // reachable, one helper each (RUP, as v leads into them only
+                // from unreachable states), and the lemma for layer i + 1
+                // fails.
+                if let Some(flags) = flags {
+                    let assumed = [reason.as_slice(), &[Lit::Eq(x, v)]].concat();
+                    for t in marked(&alive[i + 1]) {
+                        ctx.rup(&assumed, &[!flags[i + 1][t]]);
+                    }
+                }
                 ctx.remove(x, v, why)?;
             }
         }
@@ -438,6 +489,21 @@ mod tests {
         Automaton::new(2, &[(0, 0, 0), (0, 1, 1), (1, 0, 1), (1, 1, 0)], &[0]).unwrap()
     }
 
+    /// Words over {0, 1} whose third symbol from the end is 1: state 0
+    /// guesses which 1 that is. A deterministic version needs 8 states.
+    fn third_from_last_is_one() -> Automaton {
+        let edges = [
+            (0, 0, 0),
+            (0, 1, 0),
+            (0, 1, 1),
+            (1, 0, 2),
+            (1, 1, 2),
+            (2, 0, 3),
+            (2, 1, 3),
+        ];
+        Automaton::new(4, &edges, &[3]).unwrap()
+    }
+
     #[test]
     fn accepting_words() {
         let a = three_two();
@@ -464,15 +530,21 @@ mod tests {
             Automaton::new(2, &[], &[3]),
             Err(AutomatonError::NoSuchState(3))
         );
-        assert_eq!(
-            Automaton::new(2, &[(0, 5, 0), (0, 5, 1)], &[]),
-            Err(AutomatonError::NonDeterministic {
-                state: 0,
-                symbol: 5
-            })
-        );
-        // The same transition twice is fine.
-        assert!(Automaton::new(1, &[(0, 5, 0), (0, 5, 0)], &[0]).is_ok());
+        // The same transition twice is fine, and counts once.
+        let a = Automaton::new(1, &[(0, 5, 0), (0, 5, 0)], &[0]).unwrap();
+        assert_eq!(a.targets(0, 5).collect::<Vec<_>>(), [0]);
+    }
+
+    #[test]
+    fn several_targets_on_one_symbol() {
+        let a = third_from_last_is_one();
+        assert_eq!(a.targets(0, 1).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(a.targets(0, 0).collect::<Vec<_>>(), [0]);
+        assert_eq!(a.targets(3, 0).count(), 0);
+        assert!(a.accepts(&[1, 0, 0]));
+        assert!(a.accepts(&[0, 1, 1, 1, 0, 1]));
+        assert!(!a.accepts(&[1, 0, 1, 0, 0, 1]));
+        assert!(!a.accepts(&[1, 1])); // too short
     }
 
     /// The two ways to post a Regular.
@@ -492,7 +564,8 @@ mod tests {
     }
 
     /// Every solution, by search, as the values of `positions` (indices
-    /// into `vars`, which may repeat).
+    /// into `vars`, which may repeat). Solutions that differ only in the
+    /// tables' state variables (several runs over one word) count once.
     fn solve_words(
         how: How,
         domains: &[(i64, i64)],
@@ -503,13 +576,18 @@ mod tests {
         let vars: Vec<VarId> = domains.iter().map(|&(lo, hi)| m.int_var(lo, hi)).collect();
         let sequence: Vec<VarId> = positions.iter().map(|&i| vars[i]).collect();
         post(&mut m, how, &sequence, automaton);
-        let mut words = Vec::new();
+        let mut assignments: Vec<Vec<i64>> = Vec::new();
         enumerate(&m, &Config::default(), |sol| {
-            words.push(sequence.iter().map(|&v| sol.value(v)).collect());
+            assignments.push(vars.iter().map(|&v| sol.value(v)).collect());
             ControlFlow::Continue(())
         })
         .unwrap();
-        words
+        assignments.sort();
+        assignments.dedup();
+        assignments
+            .iter()
+            .map(|a| positions.iter().map(|&i| a[i]).collect())
+            .collect()
     }
 
     /// Every word over the sequence that `automaton` accepts, by brute force
@@ -588,6 +666,29 @@ mod tests {
     }
 
     #[test]
+    fn a_nondeterministic_automaton() {
+        // Five symbols, the third from the end fixed: 2⁴ words.
+        assert_eq!(
+            check_words(&[(0, 1); 5], &sequence(5), &third_from_last_is_one()),
+            16
+        );
+    }
+
+    #[test]
+    fn propagation_follows_every_run() {
+        // Three cells: the first is the third from the end, so it must be
+        // 1. The others are free, whichever run reads them.
+        let mut m = Model::new();
+        let x = [m.int_var(0, 1), m.int_var(0, 1), m.int_var(0, 1)];
+        m.post(Regular::new(&x, third_from_last_is_one()));
+        let (store, result) = propagate(&m);
+        assert!(result.is_ok());
+        assert_eq!(values(&store, x[0]), BTreeSet::from([1]));
+        assert_eq!(values(&store, x[1]), BTreeSet::from([0, 1]));
+        assert_eq!(values(&store, x[2]), BTreeSet::from([0, 1]));
+    }
+
+    #[test]
     fn a_repeated_variable() {
         // x y x with even parity: x x is always even, so y must be 0.
         assert_eq!(check_words(&[(0, 1); 2], &[0, 1, 0], &even_parity()), 2);
@@ -647,12 +748,12 @@ mod tests {
         assert!(regular_by_tables(&mut m, "row", &[x], &even_parity()).is_err());
     }
 
-    /// A random automaton over symbols -1..=2: each (state, symbol) has a
-    /// transition with probability 2/3.
+    /// A random, usually nondeterministic, automaton over symbols -1..=2:
+    /// each (state, symbol) has up to two targets.
     fn random_automaton() -> impl Strategy<Value = Automaton> {
         (1usize..=4).prop_flat_map(|k| {
-            let edge = prop::option::weighted(0.67, 0..k);
-            let table = prop::collection::vec(prop::collection::vec(edge, 4), k);
+            let targets = prop::collection::vec(0..k, 0..=2);
+            let table = prop::collection::vec(prop::collection::vec(targets, 4), k);
             let accepting = prop::collection::vec(any::<bool>(), k);
             (table, accepting).prop_map(move |(table, accepting)| {
                 let edges: Vec<(usize, i64, usize)> = table
@@ -661,7 +762,7 @@ mod tests {
                     .flat_map(|(q, row)| {
                         row.iter()
                             .enumerate()
-                            .filter_map(move |(s, t)| t.map(|t| (q, s as i64 - 1, t)))
+                            .flat_map(move |(s, ts)| ts.iter().map(move |&t| (q, s as i64 - 1, t)))
                     })
                     .collect();
                 let finals: Vec<usize> = (0..k).filter(|&q| accepting[q]).collect();
