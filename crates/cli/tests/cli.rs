@@ -141,6 +141,52 @@ fn files_are_named_in_reports() {
 }
 
 #[test]
+fn constraint_kinds_for_people() {
+    let o = cps(&["--constraints"], "");
+    assert_eq!(o.status.code(), Some(0));
+    let out = stdout(&o);
+    assert!(
+        out.starts_with("(label not_equals x y)\n    x ≠ y\n"),
+        "{out}"
+    );
+    assert_eq!(out.lines().count(), 2 * lang::CONSTRAINTS.len());
+}
+
+#[test]
+fn constraint_kinds_as_json() {
+    let o = cps(&["--constraints", "--json"], "");
+    assert_eq!(o.status.code(), Some(0));
+    let out = stdout(&o);
+    assert!(
+        out.starts_with(
+            r#"[{"keyword":"not_equals","arguments":["x","y"],"summary":"x ≠ y","example":"x y"},"#
+        ),
+        "{out}"
+    );
+    assert!(out.ends_with("}]\n"));
+    for k in lang::CONSTRAINTS {
+        assert!(out.contains(&format!(r#""keyword":"{}""#, k.keyword)));
+    }
+    assert!(
+        out.contains(r#""arguments":["(start ...)","(length ...)","(height ...)","capacity"]"#)
+    );
+}
+
+#[test]
+fn every_listed_kind_passes_check() {
+    // What a completion would insert: the keyword and its example.
+    for k in lang::CONSTRAINTS {
+        let model = format!(
+            "( (version 1) (variables (x 0 3) (y 0 3) (z 0 3)) \
+             (constraints (c {} {})) (prob_type enumerate) )",
+            k.keyword, k.example
+        );
+        let o = cps(&["--check", "-"], &model);
+        assert_eq!(o.status.code(), Some(0), "{}: {}", k.keyword, stderr(&o));
+    }
+}
+
+#[test]
 fn usage_problems_exit_with_2() {
     for args in [
         &[][..],
@@ -148,6 +194,9 @@ fn usage_problems_exit_with_2() {
         &["--check", "--proof", "p", "-"],
         &["--wibble", "-"],
         &["--check", "/no/such/file.scp"],
+        &["--constraints", "-"],
+        &["--constraints", "--check", "-"],
+        &["--constraints", "--proof", "p"],
     ] {
         let o = cps(args, GOOD);
         assert_eq!(o.status.code(), Some(2), "{args:?}: {}", stderr(&o));
