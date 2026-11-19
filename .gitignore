@@ -2,3 +2,4 @@
 .devcontainer
 *.opb
 *.pbp
+.DS_Store
