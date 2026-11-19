@@ -10,7 +10,7 @@ use std::ops::ControlFlow;
 use std::path::Path;
 use std::process::Command;
 
-use lang::{ProbType, ScpError, read_scp};
+use lang::{ErrorKind, ProbType, read_scp};
 use solver::Config;
 
 /// What happened to one document.
@@ -18,7 +18,7 @@ pub enum Run {
     /// Solved: this many solutions (all of them for `enumerate`; 0 or 1
     /// for `decide`).
     Solutions(u64),
-    /// Uses a constraint keyword we don't support yet.
+    /// Uses something the reader doesn't support yet, and what.
     Unsupported(String),
     /// An optimisation problem, which we can't solve yet.
     Optimisation,
@@ -33,7 +33,7 @@ pub fn run(text: &str) -> Result<Run, String> {
 fn run_with(text: &str, config: &Config) -> Result<Run, String> {
     let (model, scp) = match read_scp(text) {
         Ok(read) => read,
-        Err(ScpError::Unsupported(op)) => return Ok(Run::Unsupported(op)),
+        Err(e) if e.kind == ErrorKind::Unsupported => return Ok(Run::Unsupported(e.message)),
         Err(e) => return Err(e.to_string()),
     };
     let stop_after_first = match scp.prob_type {
@@ -98,10 +98,13 @@ pub fn run_with_proof(text: &str, stem: &Path) -> Result<Proof, String> {
 
 /// The constraint keywords used in a document, for reporting coverage.
 pub fn keywords(text: &str) -> Vec<String> {
-    let Ok(lang::sexpr::SExpr::List(sections)) = lang::sexpr::parse(text) else {
+    let Ok(top) = lang::sexpr::parse(text) else {
         return vec![];
     };
-    let Some(lang::sexpr::SExpr::List(cons)) = sections.get(2) else {
+    let Some(cons) = top
+        .as_list()
+        .and_then(|sections| sections.get(2)?.as_list())
+    else {
         return vec![];
     };
     cons.iter()
@@ -140,7 +143,7 @@ impl Tally {
             );
         }
         if !self.unsupported.is_empty() {
-            println!("   skipped as unsupported, by keyword:");
+            println!("   skipped as unsupported:");
             for (op, n) in &self.unsupported {
                 println!("     {n:5}  {op}");
             }
