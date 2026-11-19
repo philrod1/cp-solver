@@ -298,7 +298,8 @@ impl Reader {
     fn amount(&mut self, e: &SExpr, what: &str) -> Result<i64, ScpError> {
         let v = self.var(e)?;
         let Some(value) = self.model.constant_value(v) else {
-            let message = "cumulative with variable lengths, heights or capacity";
+            let message =
+                "cumulative with variable lengths, heights or capacity isn't supported yet";
             return Err(error(ErrorKind::Unsupported, e, message));
         };
         if value < 0 {
