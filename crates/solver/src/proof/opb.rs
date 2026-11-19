@@ -8,13 +8,15 @@
 //!   values, a two's-complement sign bit `i[x][sign]`;
 //! - the declared bounds as rows `@i[x][lb]` and `@i[x][ub]`;
 //! - constraint rows `@c[name][role]`, and flags `b[name][role]`, or
-//!   `x[name][i]` / `x[name][i_j]` when they are numbered;
+//!   `x[name][i]` / `x[name][i_j]` when they are numbered, or
+//!   `v[name][i_j][annotation]` when they are indexed by values;
 //! - atoms `i[x][geV]` (x ≥ V) and `i[x][eqV]` (x = V), for constraints
 //!   whose rows need them, defined by rows `@i[x][geV][r]` and `[f]`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
+use super::Flag;
 use super::pb::{Ineq, Names, PbLit};
 use crate::model::{Model, VarId};
 
@@ -162,7 +164,7 @@ impl OpbEncoder<'_> {
     }
 
     /// The atom `x >= v`, defined in the OPB the first time it is asked for.
-    fn ge(&mut self, x: VarId, v: i64) -> PbLit {
+    pub(crate) fn ge(&mut self, x: VarId, v: i64) -> PbLit {
         if let Some(&atom) = self.enc.atoms[x.index()].ge.get(&v) {
             return atom;
         }
@@ -194,6 +196,27 @@ impl OpbEncoder<'_> {
         self.line(&format!("{name}[r]"), &ineq.clone().implied_by(flag));
         self.line(&format!("{name}[f]"), &ineq.negated().implied_by(!flag));
         flag
+    }
+
+    /// A fresh flag numbered by `values`, e.g. `v[name][0_2][sb]`, true
+    /// exactly when `ineq` holds, defined by rows `@v[name][0_2][sb][r]`
+    /// (flag => ineq) and `[f]` (!flag => !ineq).
+    pub(crate) fn value_flag(&mut self, values: &[i64], annotation: &str, ineq: Ineq) -> Flag {
+        let values: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+        let name = format!(
+            "v[{}][{}][{annotation}]",
+            self.constraint_name,
+            values.join("_")
+        );
+        let flag = PbLit::pos(self.enc.names.fresh(name.clone()));
+        self.line(&format!("{name}[r]"), &ineq.clone().implied_by(flag));
+        self.line(&format!("{name}[f]"), &ineq.negated().implied_by(!flag));
+        Flag::named(flag, &name)
+    }
+
+    /// The name the constraint's labels carry.
+    pub(crate) fn constraint_name(&self) -> &str {
+        self.constraint_name
     }
 
     /// `x`'s declared bounds.

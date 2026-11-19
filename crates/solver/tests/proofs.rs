@@ -12,8 +12,8 @@ use std::sync::OnceLock;
 
 use proptest::prelude::*;
 use solver::{
-    AllDifferent, Automaton, Cell, Config, Linear, Model, NotEqual, Outcome, Regular, Table, VarId,
-    VarOrder, enumerate, solve,
+    AllDifferent, Automaton, Cell, Config, Cumulative, Linear, Model, NotEqual, Outcome, Regular,
+    Table, VarId, VarOrder, enumerate, solve,
 };
 
 /// The VeriPB command, if there is one.
@@ -402,6 +402,59 @@ fn regular_with_a_repeated_variable() {
     );
 }
 
+// ---- cumulative ----
+
+/// Whether tasks starting at `starts` stay within `capacity` at every time.
+fn fits(starts: &[i64], durations: &[i64], heights: &[i64], capacity: i64) -> bool {
+    let first = starts.iter().copied().min().unwrap_or(0);
+    let last = starts.iter().zip(durations).map(|(s, d)| s + d).max();
+    (first..last.unwrap_or(first)).all(|t| {
+        let used: i64 = (0..starts.len())
+            .filter(|&i| starts[i] <= t && t < starts[i] + durations[i])
+            .map(|i| heights[i])
+            .sum();
+        used <= capacity
+    })
+}
+
+#[test]
+fn cumulative_disjunctive() {
+    // Three tasks of length 2 on a machine that runs one at a time, all
+    // starting in 0..=5: 3! orders, and 4 ways to place the one spare step
+    // before, between or after them.
+    let mut m = Model::new();
+    let s: Vec<VarId> = (0..3)
+        .map(|i| m.int_var_named(&format!("s{i}"), 0, 5))
+        .collect();
+    m.post_named("c", Cumulative::new(&s, &[2, 2, 2], &[1, 1, 1], 1))
+        .unwrap();
+    for order in [VarOrder::InputOrder, VarOrder::SmallestDomain] {
+        let name = format!("cumulative_disjunctive_{order:?}");
+        assert_eq!(enumerate_checked(&name, &m, order), 24);
+    }
+}
+
+#[test]
+fn cumulative_needs_several_steps() {
+    // A long fixed task leaves a short one three steps of starts to rule
+    // out, then a third task shares what is left.
+    let mut m = Model::new();
+    let domains = [(0, 0), (0, 9), (0, 9)];
+    let s: Vec<VarId> = domains
+        .iter()
+        .enumerate()
+        .map(|(i, &(lo, hi))| m.int_var_named(&format!("s{i}"), lo, hi))
+        .collect();
+    let (durations, heights) = ([6, 2, 3], [2, 1, 1]);
+    m.post_named("c", Cumulative::new(&s, &durations, &heights, 2))
+        .unwrap();
+    let expected = count(&domains, &|v| fits(v, &durations, &heights, 2));
+    for order in [VarOrder::InputOrder, VarOrder::SmallestDomain] {
+        let name = format!("cumulative_steps_{order:?}");
+        assert_eq!(enumerate_checked(&name, &m, order), expected);
+    }
+}
+
 // ---- random models, against brute force ----
 
 /// The number of assignments over `domains` that `ok` accepts.
@@ -553,6 +606,24 @@ proptest! {
         m.post(Regular::new(&vars, automaton.clone()));
         let expected = count(&domains, &|v| automaton.accepts(v));
         prop_assert_eq!(enumerate_checked("random_regular", &m, order(input_order)), expected);
+    }
+
+    #[test]
+    fn random_cumulative_models(
+        (domains, tasks) in domains(1..=4).prop_flat_map(|d| {
+            let n = d.len();
+            (Just(d), prop::collection::vec((0i64..=3, 0i64..=3), n))
+        }),
+        capacity in 0i64..=4,
+        input_order: bool,
+    ) {
+        let durations: Vec<i64> = tasks.iter().map(|t| t.0).collect();
+        let heights: Vec<i64> = tasks.iter().map(|t| t.1).collect();
+        let mut m = Model::new();
+        let vars = model_vars(&mut m, &domains);
+        m.post(Cumulative::new(&vars, &durations, &heights, capacity));
+        let expected = count(&domains, &|v| fits(v, &durations, &heights, capacity));
+        prop_assert_eq!(enumerate_checked("random_cumulative", &m, order(input_order)), expected);
     }
 
     #[test]
