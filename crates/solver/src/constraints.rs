@@ -5,12 +5,14 @@
 //! constraint means writing that file and adding two lines here.
 
 mod all_different;
+mod cumulative;
 mod linear;
 mod not_equal;
 mod regular;
 mod table;
 
 pub use all_different::AllDifferent;
+pub use cumulative::Cumulative;
 pub use linear::Linear;
 pub use not_equal::NotEqual;
 pub use regular::{Automaton, AutomatonError, Regular, regular_by_tables};

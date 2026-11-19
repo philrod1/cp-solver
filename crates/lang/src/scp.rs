@@ -22,7 +22,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use solver::{
-    AllDifferent, Automaton, Cell, Constraint, Linear, Model, NotEqual, Regular, Table, VarId,
+    AllDifferent, Automaton, Cell, Constraint, Cumulative, Linear, Model, NotEqual, Regular, Table,
+    VarId,
 };
 
 use crate::sexpr::{self, SExpr, SExprError};
@@ -209,6 +210,19 @@ impl Reader {
         list(e, what)?.iter().map(|v| self.var(v)).collect()
     }
 
+    /// The value of an integer constant, or `None` for a variable.
+    fn constant(&mut self, e: &SExpr) -> Result<Option<i64>, ScpError> {
+        let v = self.var(e)?;
+        Ok(self.model.constant_value(v))
+    }
+
+    /// The values of a list of integer constants, or `None` if any of them
+    /// is a variable.
+    fn constant_list(&mut self, e: &SExpr, what: &str) -> Result<Option<Vec<i64>>, ScpError> {
+        let vars = self.var_list(e, what)?;
+        Ok(vars.iter().map(|&v| self.model.constant_value(v)).collect())
+    }
+
     /// Add `coeff * e` to a sum. A constant goes into the sum's constant part
     /// instead of becoming a fixed variable.
     fn add_term(&mut self, sum: &mut Sum, coeff: i64, e: &SExpr) -> Result<(), ScpError> {
@@ -323,6 +337,31 @@ impl Reader {
                 let automaton = automaton(num_states, edges, finals)
                     .map_err(|e| ScpError::Malformed(format!("in constraint '{label}': {e}")))?;
                 self.post(label, Regular::new(&vars, automaton))
+            }
+            "cumulative" => {
+                let [starts, lengths, heights, capacity] = args else {
+                    return wrong();
+                };
+                let starts = self.var_list(starts, "a cumulative start list")?;
+                let lengths = self.constant_list(lengths, "a cumulative length list")?;
+                let heights = self.constant_list(heights, "a cumulative height list")?;
+                let capacity = self.constant(capacity)?;
+                let (Some(lengths), Some(heights), Some(capacity)) = (lengths, heights, capacity)
+                else {
+                    return Err(ScpError::Unsupported(
+                        "cumulative with variable lengths, heights or capacity".into(),
+                    ));
+                };
+                if starts.len() != lengths.len() || starts.len() != heights.len() {
+                    return malformed(format!("one length and one height per task in {c}"));
+                }
+                if capacity < 0 || lengths.iter().chain(&heights).any(|&v| v < 0) {
+                    return malformed(format!("negative length, height or capacity in {c}"));
+                }
+                self.post(
+                    label,
+                    Cumulative::new(&starts, &lengths, &heights, capacity),
+                )
             }
             _ => Err(ScpError::Unsupported(op.to_string())),
         }

@@ -19,7 +19,8 @@
 //! - *pins*: outside the declared bounds the atom is a constant, and says
 //!   so as a unit clause. These are needed: "some value is taken" can't be
 //!   shown by RUP without a unit to start the cascade through the `eq`
-//!   definitions.
+//!   definitions. The pin of an atom at or below the lower bound is
+//!   labelled `@i[x][geV][pin]`, for `pol` steps to cite.
 //! - *links* to its nearest defined neighbours (`x ≥ 5 ⇒ x ≥ 3`). These
 //!   turn out not to be needed by VeriPB yet: unit propagation on two
 //!   opposing bounds over the same bits (`Σ ≥ a`, `Σ ≤ b`, `a > b`) always
@@ -38,7 +39,7 @@ use std::path::{Path, PathBuf};
 
 use super::opb::{Atoms, Encoding, eq_definition, write_opb};
 use super::pb::{Ineq, PbLit, write_lit};
-use super::{Conclusion, ProofLogger, Rule};
+use super::{Conclusion, Flag, GeAtom, Line, Pol, ProofLogger, Rule};
 use crate::lit::Lit;
 use crate::model::{Model, VarId};
 
@@ -47,6 +48,8 @@ pub(crate) struct VeriPb {
     atoms: Vec<Atoms>,
     out: BufWriter<File>,
     line: String,
+    /// How many labelled lines it has written, for fresh labels.
+    labelled: usize,
     error: Option<io::Error>,
 }
 
@@ -75,6 +78,7 @@ impl VeriPb {
             atoms,
             out,
             line: String::new(),
+            labelled: 0,
             error: None,
         };
         proof.adopt_opb_atoms();
@@ -167,7 +171,7 @@ impl VeriPb {
         // (-Σ + M·atom ≥ 1 - v) + (Σ ≥ lo) is M·atom ≥ lo - v + 1 ≥ 1.
         // For v > hi, [r] plus the upper bound row leaves ¬atom likewise.
         if v <= lo {
-            self.emit_text(&format!("pol @{label}[f] @{lb} + s ;"));
+            self.emit_text(&format!("@{label}[pin] pol @{label}[f] @{lb} + s ;"));
         }
         if v > hi {
             self.emit_text(&format!("pol @{label}[r] @{ub} + s ;"));
@@ -205,6 +209,12 @@ impl VeriPb {
         atom
     }
 
+    /// A label no line has yet.
+    fn fresh_line(&mut self) -> Line {
+        self.labelled += 1;
+        Line(format!("pl{}", self.labelled))
+    }
+
     // The clause !r1 || ... || !rn || extra
     fn clause(&mut self, reason: &[Lit], extra: Option<Lit>) -> Ineq {
         let mut lits: Vec<PbLit> = reason.iter().map(|&r| !self.atom(r)).collect();
@@ -234,6 +244,53 @@ impl ProofLogger for VeriPb {
         let mut lits: Vec<PbLit> = reason.iter().map(|&r| !self.atom(r)).collect();
         lits.extend_from_slice(clause);
         self.emit_step(Rule::Rup, &Ineq::clause(lits));
+    }
+
+    fn linear(&self, terms: &[(i64, VarId)]) -> Vec<(i128, PbLit)> {
+        terms
+            .iter()
+            .flat_map(|&(a, x)| self.enc.int(x).scaled(a.into()))
+            .collect()
+    }
+
+    fn define_flag(&mut self, name: String, ineq: &Ineq) -> Flag {
+        let lit = PbLit::pos(self.enc.names.fresh(name.clone()));
+        let forward = ineq.clone().implied_by(lit);
+        let reverse = ineq.negated().implied_by(!lit);
+        self.emit_red(&format!("{name}[r]"), &forward, lit, false);
+        self.emit_red(&format!("{name}[f]"), &reverse, lit, true);
+        Flag::named(lit, &name)
+    }
+
+    fn ge_atom(&mut self, x: VarId, v: i64) -> GeAtom {
+        let lit = self.ge(x, v);
+        let int = self.enc.int(x);
+        let label = int.label(&format!("ge{v}"));
+        let pin = (v <= int.lo).then(|| Line(format!("{label}[pin]")));
+        GeAtom {
+            flag: Flag::named(lit, &label),
+            pin,
+        }
+    }
+
+    fn rup_line(&mut self, ineq: &Ineq) -> Line {
+        let line = self.fresh_line();
+        write!(self.line, "@{} ", line.0).unwrap();
+        self.emit_step(Rule::Rup, ineq);
+        line
+    }
+
+    fn pol(&mut self, pol: &Pol) -> Line {
+        let line = self.fresh_line();
+        write!(self.line, "@{} pol", line.0).unwrap();
+        pol.write_to(&self.enc.names, &mut self.line);
+        self.line.push_str(" ;");
+        self.emit();
+        line
+    }
+
+    fn comment(&mut self, text: &str) {
+        self.emit_text(&format!("% {text}"));
     }
 
     fn backtrack(&mut self, decisions: &[Lit]) {
