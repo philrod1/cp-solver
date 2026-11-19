@@ -115,6 +115,103 @@ impl ScpModel {
     }
 }
 
+/// A constraint keyword the reader understands: in a document, a
+/// constraint is `(label keyword arguments...)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConstraintKind {
+    pub keyword: &'static str,
+    /// What goes after the keyword, one name per argument, e.g. `x`, or
+    /// `(var ...)` for a list. Anywhere a variable goes, an integer can
+    /// go instead.
+    pub arguments: &'static [&'static str],
+    /// What the constraint says, in one line.
+    pub summary: &'static str,
+    /// Arguments that read, over variables `x`, `y` and `z` from 0 to 3.
+    pub example: &'static str,
+}
+
+const fn kind(
+    keyword: &'static str,
+    arguments: &'static [&'static str],
+    summary: &'static str,
+    example: &'static str,
+) -> ConstraintKind {
+    ConstraintKind {
+        keyword,
+        arguments,
+        summary,
+        example,
+    }
+}
+
+const PAIR: &[&str] = &["x", "y"];
+const LINEAR: &[&str] = &["(coeff var ...)", "value"];
+
+/// Every constraint keyword the reader understands. Any other keyword is
+/// [`ErrorKind::Unsupported`].
+pub const CONSTRAINTS: &[ConstraintKind] = &[
+    kind("not_equals", PAIR, "x ≠ y", "x y"),
+    kind("equals", PAIR, "x = y", "x y"),
+    kind("less_than", PAIR, "x < y", "x y"),
+    kind("less_equal", PAIR, "x ≤ y", "x y"),
+    kind("greater_than", PAIR, "x > y", "x y"),
+    kind("greater_equal", PAIR, "x ≥ y", "x y"),
+    kind("plus", &["a", "b", "r"], "a + b = r", "x y z"),
+    kind("minus", &["a", "b", "r"], "a − b = r", "x y z"),
+    kind("lin_equals", LINEAR, "Σ coeff·var = value", "(1 x 2 y) 3"),
+    kind(
+        "lin_less_equal",
+        LINEAR,
+        "Σ coeff·var ≤ value",
+        "(1 x 2 y) 3",
+    ),
+    kind(
+        "lin_less_than",
+        LINEAR,
+        "Σ coeff·var < value",
+        "(1 x 2 y) 3",
+    ),
+    kind(
+        "lin_greater_equal",
+        LINEAR,
+        "Σ coeff·var ≥ value",
+        "(1 x 2 y) 3",
+    ),
+    kind(
+        "lin_greater_than",
+        LINEAR,
+        "Σ coeff·var > value",
+        "(1 x -1 y) 0",
+    ),
+    kind(
+        "all_different",
+        &["(var ...)"],
+        "no two of the variables are equal",
+        "(x y z)",
+    ),
+    kind(
+        "table",
+        &["(row ...)", "(var ...)"],
+        "the variables match one of the rows; * in a row matches anything",
+        "((0 1) (1 *)) (x y)",
+    ),
+    kind(
+        "regular",
+        &["(var ...)", "states", "(edges ...)", "(accepting ...)"],
+        "the variables spell a word the automaton accepts: one list of \
+         (symbol target) edges per state, starting from state 0",
+        "(x y) 2 (((0 0) (1 1)) ((0 1))) (1)",
+    ),
+    kind(
+        "cumulative",
+        &["(start ...)", "(length ...)", "(height ...)", "capacity"],
+        "tasks share a resource: at every time, the heights of the tasks \
+         running total at most the capacity; lengths, heights and capacity \
+         are constants",
+        "(x y) (2 1) (1 1) 1",
+    ),
+];
+
 /// Build a [`Model`] from the text of a `.scp` document. On error nothing is
 /// returned, so there's never a half-built model. The error is the first
 /// in the text.
@@ -346,6 +443,10 @@ impl Reader {
         };
         atom(label, "a constraint label")?;
         let op = atom(keyword, "a constraint keyword")?;
+        if !CONSTRAINTS.iter().any(|k| k.keyword == op) {
+            let message = format!("unsupported constraint '{op}'");
+            return Err(error(ErrorKind::Unsupported, keyword, message));
+        }
         let wrong = || malformed(c, format!("wrong arguments for '{op}'"));
 
         match op {
@@ -445,10 +546,7 @@ impl Reader {
                 let constraint = Cumulative::new(&starts, &lengths_given, &heights_given, capacity);
                 self.post(label, constraint)
             }
-            _ => {
-                let message = format!("unsupported constraint '{op}'");
-                Err(error(ErrorKind::Unsupported, keyword, message))
-            }
+            _ => unreachable!("'{op}' is in CONSTRAINTS but has no case here"),
         }
     }
 
@@ -764,6 +862,24 @@ mod tests {
         let syntax = check_scp("( (version 1)");
         assert_eq!(syntax.len(), 1);
         assert_eq!(syntax[0].kind, ErrorKind::Syntax);
+    }
+
+    #[test]
+    fn every_listed_constraint_reads_its_example() {
+        for k in CONSTRAINTS {
+            let c = format!("(c {} {})", k.keyword, k.example);
+            let text = doc("(x 0 3) (y 0 3) (z 0 3)", &c, "enumerate");
+            let (model, _) = read_scp(&text).unwrap_or_else(|e| panic!("{c}: {e}"));
+            assert_eq!(model.constraint_names(), ["c"], "{c}");
+        }
+        let mut keywords: Vec<_> = CONSTRAINTS.iter().map(|k| k.keyword).collect();
+        keywords.sort();
+        keywords.dedup();
+        assert_eq!(
+            keywords.len(),
+            CONSTRAINTS.len(),
+            "a keyword is listed twice"
+        );
     }
 
     #[test]

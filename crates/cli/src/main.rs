@@ -4,16 +4,18 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::{env, fs};
 
-use lang::{ErrorKind, ProbType, ScpError, ScpModel};
+use lang::{CONSTRAINTS, ConstraintKind, ErrorKind, ProbType, ScpError, ScpModel};
 use solver::{Config, Outcome, Solution};
 
 const USAGE: &str = "\
 usage: cps <model.scp> [--proof <path-stem>]
        cps --check [--json] <model.scp>
+       cps --constraints [--json]
 
   --proof <stem>  write a VeriPB proof to <stem>.opb and <stem>.pbp
   --check         report every problem in the model, without solving it
-  --json          with --check, report them as a JSON array
+  --constraints   list the constraint kinds a model can use
+  --json          with --check or --constraints, print JSON
 
 A model path of - reads the model from standard input.
 Exit status: 0 if all went well, 1 if the model has problems, 2 if cps
@@ -38,17 +40,18 @@ fn main() -> ExitCode {
     }
 }
 
-struct Args {
-    model: String,
-    check: bool,
-    json: bool,
-    config: Config,
+/// What the arguments ask for.
+enum Command {
+    Help,
+    Constraints { json: bool },
+    Check { model: String, json: bool },
+    Solve { model: String, config: Config },
 }
 
-fn parse_args() -> Result<Option<Args>, String> {
+fn parse_args() -> Result<Command, String> {
     let mut args = env::args().skip(1);
     let mut model = None;
-    let (mut check, mut json) = (false, false);
+    let (mut check, mut constraints, mut json) = (false, false, false);
     let mut config = Config::default();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -57,61 +60,72 @@ fn parse_args() -> Result<Option<Args>, String> {
                 config.proof = Some(PathBuf::from(stem));
             }
             "--check" => check = true,
+            "--constraints" => constraints = true,
             "--json" => json = true,
-            "-h" | "--help" => return Ok(None),
+            "-h" | "--help" => return Ok(Command::Help),
             "-" if model.is_none() => model = Some(arg),
-            _ if arg.starts_with('-') => return Err(format!("unknown option {arg}\n{USAGE}")),
+            _ if arg.starts_with('-') => return Err(format!("unknown option {arg}")),
             _ if model.is_none() => model = Some(arg),
-            _ => return Err(format!("unexpected argument {arg}\n{USAGE}")),
+            _ => return Err(format!("unexpected argument {arg}")),
         }
     }
-    let model = model.ok_or(USAGE)?;
-    if json && !check {
-        return Err(format!("--json goes with --check\n{USAGE}"));
+    let proof = config.proof.is_some();
+    match (constraints, check, model) {
+        (true, false, None) if !proof => Ok(Command::Constraints { json }),
+        (true, _, _) => Err("--constraints takes no model, and no other options but --json".into()),
+        (false, true, Some(_)) if proof => Err("--check solves nothing, so writes no proof".into()),
+        (false, true, Some(model)) => Ok(Command::Check { model, json }),
+        (false, false, Some(_)) if json => Err("--json goes with --check or --constraints".into()),
+        (false, false, Some(model)) => Ok(Command::Solve { model, config }),
+        (false, _, None) => Err("no model given".into()),
     }
-    if check && config.proof.is_some() {
-        return Err(format!(
-            "--check solves nothing, so writes no proof\n{USAGE}"
-        ));
-    }
-    Ok(Some(Args {
-        model,
-        check,
-        json,
-        config,
-    }))
 }
 
 fn run() -> Result<(), Failure> {
-    let Some(args) = parse_args().map_err(Failure::Usage)? else {
-        println!("{USAGE}");
-        return Ok(());
-    };
-    let source = read_model(&args.model).map_err(Failure::Usage)?;
-
-    if args.check {
-        let problems = lang::check_scp(&source);
-        if args.json {
-            println!("{}", json_problems(&problems));
-        } else {
-            report(&args.model, &problems);
-        }
-        return if problems.is_empty() {
+    let usage = |msg: String| Failure::Usage(format!("{msg}\n{USAGE}"));
+    match parse_args().map_err(usage)? {
+        Command::Help => {
+            println!("{USAGE}");
             Ok(())
-        } else {
-            Err(Failure::Model)
-        };
+        }
+        Command::Constraints { json } => {
+            if json {
+                println!("{}", json_constraints(CONSTRAINTS));
+            } else {
+                print_constraints(CONSTRAINTS);
+            }
+            Ok(())
+        }
+        Command::Check { model, json } => {
+            let source = read_model(&model).map_err(Failure::Usage)?;
+            let problems = lang::check_scp(&source);
+            if json {
+                println!("{}", json_problems(&problems));
+            } else {
+                report(&model, &problems);
+            }
+            if problems.is_empty() {
+                Ok(())
+            } else {
+                Err(Failure::Model)
+            }
+        }
+        Command::Solve { model, config } => {
+            let source = read_model(&model).map_err(Failure::Usage)?;
+            solve(&model, &source, &config)
+        }
     }
+}
 
-    let Ok((model, scp)) = lang::read_scp(&source) else {
-        report(&args.model, &lang::check_scp(&source));
+fn solve(path: &str, source: &str, config: &Config) -> Result<(), Failure> {
+    let Ok((model, scp)) = lang::read_scp(source) else {
+        report(path, &lang::check_scp(source));
         return Err(Failure::Model);
     };
-    let config = args.config;
     let solver_error = |e| Failure::Usage(format!("solver error: {e}"));
 
     match scp.prob_type {
-        ProbType::Decide => match solver::solve(&model, &config).map_err(solver_error)? {
+        ProbType::Decide => match solver::solve(&model, config).map_err(solver_error)? {
             Outcome::Satisfiable(sol) => {
                 println!("SATISFIABLE");
                 print_solution(&scp, &sol);
@@ -120,7 +134,7 @@ fn run() -> Result<(), Failure> {
             Outcome::Unknown => println!("UNKNOWN"),
         },
         ProbType::Enumerate => {
-            let count = solver::enumerate(&model, &config, |sol| {
+            let count = solver::enumerate(&model, config, |sol| {
                 print_solution(&scp, sol);
                 ControlFlow::Continue(())
             })
@@ -128,11 +142,45 @@ fn run() -> Result<(), Failure> {
             println!("{count} solutions");
         }
         ProbType::Minimize(_) | ProbType::Maximize(_) => {
-            eprintln!("{}: optimisation problems aren't supported yet", args.model);
+            eprintln!("{path}: optimisation problems aren't supported yet");
             return Err(Failure::Model);
         }
     }
     Ok(())
+}
+
+/// One line per kind, as it would be written, then what it says:
+///
+/// ```text
+/// (label not_equals x y)
+///     x ≠ y
+/// ```
+fn print_constraints(kinds: &[ConstraintKind]) {
+    for k in kinds {
+        println!("(label {} {})", k.keyword, k.arguments.join(" "));
+        println!("    {}", k.summary);
+    }
+}
+
+/// The kinds as a JSON array, each
+/// `{"keyword": ..., "arguments": [...], "summary": ..., "example": ...}`.
+/// `example` is the text after the keyword in a constraint that reads,
+/// over variables `x`, `y` and `z` from 0 to 3.
+fn json_constraints(kinds: &[ConstraintKind]) -> String {
+    let items: Vec<String> = kinds
+        .iter()
+        .map(|k| {
+            let arguments: Vec<String> = k.arguments.iter().map(|a| json_string(a)).collect();
+            format!(
+                r#"{{"keyword":{},"arguments":[{}],"summary":{},"example":{}}}"#,
+                json_string(k.keyword),
+                arguments.join(","),
+                json_string(k.summary),
+                json_string(k.example)
+            )
+        })
+        .collect();
+    format!("[{}]", items.join(","))
 }
 
 /// The model's text, from a file or, for `-`, standard input.
