@@ -4,15 +4,32 @@
 //! characters is an atom. Atoms carry no type: `_1`, `-3`, `all_different`
 //! and `*` are all just text, and meaning is decided by whoever reads them.
 //! `Display` prints the canonical single-line form, so parsing a canonical
-//! string and printing it gives back the same string.
+//! string and printing it gives back the same string. Every expression
+//! knows where in the text it came from, for error messages.
 
 use std::fmt;
 
+/// An expression and the text it was parsed from. Equality ignores where
+/// the text was: `(a  b)` on line 3 equals `(a b)` on line 1.
+#[derive(Clone, Debug)]
+pub struct SExpr {
+    pub node: Node,
+    pub span: Span,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SExpr {
+pub enum Node {
     Atom(String),
     List(Vec<SExpr>),
 }
+
+impl PartialEq for SExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.node == other.node
+    }
+}
+
+impl Eq for SExpr {}
 
 /// A place in the text. `offset` is in bytes; lines and columns count from
 /// 1, and columns count characters.
@@ -83,25 +100,25 @@ impl std::error::Error for SExprError {}
 
 impl SExpr {
     pub fn as_atom(&self) -> Option<&str> {
-        match self {
-            SExpr::Atom(a) => Some(a),
-            SExpr::List(_) => None,
+        match &self.node {
+            Node::Atom(a) => Some(a),
+            Node::List(_) => None,
         }
     }
 
     pub fn as_list(&self) -> Option<&[SExpr]> {
-        match self {
-            SExpr::Atom(_) => None,
-            SExpr::List(items) => Some(items),
+        match &self.node {
+            Node::Atom(_) => None,
+            Node::List(items) => Some(items),
         }
     }
 }
 
 impl fmt::Display for SExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SExpr::Atom(a) => f.write_str(a),
-            SExpr::List(items) => {
+        match &self.node {
+            Node::Atom(a) => f.write_str(a),
+            Node::List(items) => {
                 f.write_str("(")?;
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 {
@@ -192,7 +209,16 @@ fn parse_at(tokens: &[Token<'_>], i: usize) -> Result<(SExpr, usize), SExprError
     let token = &tokens[i];
     match token.kind {
         Kind::Close => Err(SExprError::new("unexpected ')'", token.span)),
-        Kind::Atom(a) => Ok((SExpr::Atom(a.to_string()), i + 1)),
+        Kind::Atom(a) => {
+            let node = Node::Atom(a.to_string());
+            Ok((
+                SExpr {
+                    node,
+                    span: token.span,
+                },
+                i + 1,
+            ))
+        }
         Kind::Open => {
             let mut items = Vec::new();
             let mut i = i + 1;
@@ -200,7 +226,14 @@ fn parse_at(tokens: &[Token<'_>], i: usize) -> Result<(SExpr, usize), SExprError
                 match tokens.get(i).map(|t| &t.kind) {
                     // The innermost bracket left open is the one reported.
                     None => return Err(SExprError::new("unclosed '('", token.span)),
-                    Some(Kind::Close) => return Ok((SExpr::List(items), i + 1)),
+                    Some(Kind::Close) => {
+                        let span = Span {
+                            start: token.span.start,
+                            end: tokens[i].span.end,
+                        };
+                        let node = Node::List(items);
+                        return Ok((SExpr { node, span }, i + 1));
+                    }
                     Some(_) => {
                         let (item, next) = parse_at(tokens, i)?;
                         items.push(item);
@@ -216,20 +249,38 @@ fn parse_at(tokens: &[Token<'_>], i: usize) -> Result<(SExpr, usize), SExprError
 mod tests {
     use super::*;
 
+    /// Expressions built here have no text, so they are placed nowhere.
+    const NOWHERE: Span = Span {
+        start: Position::START,
+        end: Position::START,
+    };
+
     fn atom(a: &str) -> SExpr {
-        SExpr::Atom(a.into())
+        let node = Node::Atom(a.into());
+        SExpr {
+            node,
+            span: NOWHERE,
+        }
+    }
+
+    fn list(items: Vec<SExpr>) -> SExpr {
+        let node = Node::List(items);
+        SExpr {
+            node,
+            span: NOWHERE,
+        }
     }
 
     #[test]
     fn atoms_and_lists() {
         assert_eq!(parse("abc").unwrap(), atom("abc"));
         assert_eq!(parse("-17").unwrap(), atom("-17"));
-        assert_eq!(parse("()").unwrap(), SExpr::List(vec![]));
+        assert_eq!(parse("()").unwrap(), list(vec![]));
         assert_eq!(
             parse("(a (b -1) *)").unwrap(),
-            SExpr::List(vec![
+            list(vec![
                 atom("a"),
-                SExpr::List(vec![atom("b"), atom("-1")]),
+                list(vec![atom("b"), atom("-1")]),
                 atom("*")
             ])
         );
@@ -287,6 +338,25 @@ mod tests {
         // Everything after the first expression.
         assert_eq!(error("a bc"), (more.clone(), (1, 3), (1, 5)));
         assert_eq!(error("(a) (b)\n(c)"), (more, (1, 5), (2, 4)));
+    }
+
+    #[test]
+    fn every_expression_knows_where_it_is() {
+        let text = "(a\n  (bc -1))";
+        let top = parse(text).unwrap();
+        let at = |e: &SExpr| {
+            let Span { start, end } = e.span;
+            ((start.line, start.column), (end.line, end.column))
+        };
+        let shown = |e: &SExpr| &text[e.span.start.offset..e.span.end.offset];
+        assert_eq!(at(&top), ((1, 1), (2, 11)));
+        let items = top.as_list().unwrap();
+        assert_eq!(at(&items[0]), ((1, 2), (1, 3)));
+        assert_eq!(at(&items[1]), ((2, 3), (2, 10)));
+        assert_eq!(shown(&items[1]), "(bc -1)");
+        assert_eq!(shown(&items[1].as_list().unwrap()[1]), "-1");
+        // Where an expression is doesn't affect equality.
+        assert_eq!(top, parse("(a (bc -1))").unwrap());
     }
 
     #[test]
