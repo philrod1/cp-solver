@@ -12,9 +12,13 @@
 //!
 //! Like GCS's reader this is strict: all four sections, in that order,
 //! version exactly 1, and anything it can't make sense of is an error.
-//! A keyword it has no case for is reported separately, as
-//! [`ScpError::Unsupported`], so callers can tell "not implemented yet" from
-//! "broken file".
+//! Something it has no case for, such as an unknown keyword, is reported
+//! as [`ErrorKind::Unsupported`], so callers can tell "not implemented yet"
+//! from "broken file".
+//!
+//! Every error says which part of the text it is about. [`read_scp`] stops
+//! at the first; [`check_scp`] reads on past each bad declaration or
+//! constraint and reports them all.
 //!
 //! Anywhere a variable can appear, an integer constant can appear instead.
 
@@ -26,25 +30,36 @@ use solver::{
     VarId,
 };
 
-use crate::sexpr::{self, SExpr, SExprError};
+use crate::sexpr::{self, Node, SExpr, SExprError, Span};
 
+/// What is wrong with a document, and where.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ScpError {
+pub struct ScpError {
+    pub kind: ErrorKind,
+    /// What is wrong, without the position.
+    pub message: String,
+    /// The text at fault.
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorKind {
     /// Not a well-formed s-expression.
-    Syntax(SExprError),
+    Syntax,
     /// Well-formed, but not a valid `.scp` document.
-    Malformed(String),
-    /// A constraint keyword this reader has no case for (yet).
-    Unsupported(String),
+    Malformed,
+    /// Valid, but uses something this reader can't handle yet.
+    Unsupported,
 }
 
 impl fmt::Display for ScpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ScpError::Syntax(e) => write!(f, "syntax error: {e}"),
-            ScpError::Malformed(msg) => f.write_str(msg),
-            ScpError::Unsupported(op) => write!(f, "unsupported constraint '{op}'"),
-        }
+        let at = self.span.start;
+        write!(
+            f,
+            "line {}, column {}: {}",
+            at.line, at.column, self.message
+        )
     }
 }
 
@@ -52,12 +67,24 @@ impl std::error::Error for ScpError {}
 
 impl From<SExprError> for ScpError {
     fn from(e: SExprError) -> Self {
-        ScpError::Syntax(e)
+        ScpError {
+            kind: ErrorKind::Syntax,
+            message: e.message,
+            span: e.span,
+        }
     }
 }
 
-fn malformed<T>(msg: impl Into<String>) -> Result<T, ScpError> {
-    Err(ScpError::Malformed(msg.into()))
+fn error(kind: ErrorKind, at: &SExpr, message: impl Into<String>) -> ScpError {
+    ScpError {
+        kind,
+        message: message.into(),
+        span: at.span,
+    }
+}
+
+fn malformed<T>(at: &SExpr, message: impl Into<String>) -> Result<T, ScpError> {
+    Err(error(ErrorKind::Malformed, at, message))
 }
 
 /// What kind of answer the document asks for.
@@ -88,74 +115,199 @@ impl ScpModel {
     }
 }
 
+/// A constraint keyword the reader understands: in a document, a
+/// constraint is `(label keyword arguments...)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConstraintKind {
+    pub keyword: &'static str,
+    /// What goes after the keyword, one name per argument, e.g. `x`, or
+    /// `(var ...)` for a list. Anywhere a variable goes, an integer can
+    /// go instead.
+    pub arguments: &'static [&'static str],
+    /// What the constraint says, in one line.
+    pub summary: &'static str,
+    /// Arguments that read, over variables `x`, `y` and `z` from 0 to 3.
+    pub example: &'static str,
+}
+
+const fn kind(
+    keyword: &'static str,
+    arguments: &'static [&'static str],
+    summary: &'static str,
+    example: &'static str,
+) -> ConstraintKind {
+    ConstraintKind {
+        keyword,
+        arguments,
+        summary,
+        example,
+    }
+}
+
+const PAIR: &[&str] = &["x", "y"];
+const LINEAR: &[&str] = &["(coeff var ...)", "value"];
+
+/// Every constraint keyword the reader understands. Any other keyword is
+/// [`ErrorKind::Unsupported`].
+pub const CONSTRAINTS: &[ConstraintKind] = &[
+    kind("not_equals", PAIR, "x ≠ y", "x y"),
+    kind("equals", PAIR, "x = y", "x y"),
+    kind("less_than", PAIR, "x < y", "x y"),
+    kind("less_equal", PAIR, "x ≤ y", "x y"),
+    kind("greater_than", PAIR, "x > y", "x y"),
+    kind("greater_equal", PAIR, "x ≥ y", "x y"),
+    kind("plus", &["a", "b", "r"], "a + b = r", "x y z"),
+    kind("minus", &["a", "b", "r"], "a − b = r", "x y z"),
+    kind("lin_equals", LINEAR, "Σ coeff·var = value", "(1 x 2 y) 3"),
+    kind(
+        "lin_less_equal",
+        LINEAR,
+        "Σ coeff·var ≤ value",
+        "(1 x 2 y) 3",
+    ),
+    kind(
+        "lin_less_than",
+        LINEAR,
+        "Σ coeff·var < value",
+        "(1 x 2 y) 3",
+    ),
+    kind(
+        "lin_greater_equal",
+        LINEAR,
+        "Σ coeff·var ≥ value",
+        "(1 x 2 y) 3",
+    ),
+    kind(
+        "lin_greater_than",
+        LINEAR,
+        "Σ coeff·var > value",
+        "(1 x -1 y) 0",
+    ),
+    kind(
+        "all_different",
+        &["(var ...)"],
+        "no two of the variables are equal",
+        "(x y z)",
+    ),
+    kind(
+        "table",
+        &["(row ...)", "(var ...)"],
+        "the variables match one of the rows; * in a row matches anything",
+        "((0 1) (1 *)) (x y)",
+    ),
+    kind(
+        "regular",
+        &["(var ...)", "states", "(edges ...)", "(accepting ...)"],
+        "the variables spell a word the automaton accepts: one list of \
+         (symbol target) edges per state, starting from state 0",
+        "(x y) 2 (((0 0) (1 1)) ((0 1))) (1)",
+    ),
+    kind(
+        "cumulative",
+        &["(start ...)", "(length ...)", "(height ...)", "capacity"],
+        "tasks share a resource: at every time, the heights of the tasks \
+         running total at most the capacity; lengths, heights and capacity \
+         are constants",
+        "(x y) (2 1) (1 1) 1",
+    ),
+];
+
 /// Build a [`Model`] from the text of a `.scp` document. On error nothing is
-/// returned, so there's never a half-built model.
+/// returned, so there's never a half-built model. The error is the first
+/// in the text.
 pub fn read_scp(text: &str) -> Result<(Model, ScpModel), ScpError> {
-    let top = sexpr::parse(text)?;
-    let sections = list(&top, "the document")?;
+    read(text).map_err(|errors| errors.into_iter().next().expect("at least one error"))
+}
+
+/// Every error in the text of a `.scp` document, in the order they appear:
+/// none for a document [`read_scp`] accepts.
+pub fn check_scp(text: &str) -> Vec<ScpError> {
+    read(text).err().unwrap_or_default()
+}
+
+/// Read a document, carrying on past each bad declaration or constraint.
+/// Errors in the shape of the document itself stop it, since there is
+/// nothing sensible to read after them.
+fn read(text: &str) -> Result<(Model, ScpModel), Vec<ScpError>> {
+    let top = sexpr::parse(text).map_err(|e| vec![e.into()])?;
+    let sections = list(&top, "the document").map_err(|e| vec![e])?;
     let [version, variables, constraints, prob_type] = sections else {
-        return malformed(
-            "a document is ((version 1) (variables ...) (constraints ...) (prob_type ...))",
-        );
+        let shape = "a document is ((version 1) (variables ...) (constraints ...) (prob_type ...))";
+        return Err(vec![error(ErrorKind::Malformed, &top, shape)]);
     };
 
     // The version first, so an incompatible producer is caught before
     // anything else is read.
-    match section(version, "version")? {
-        [v] if integer(v, "the version")? == 1 => {}
-        [v] => {
-            return malformed(format!(
-                "unsupported version {v}: only version 1 is accepted"
-            ));
+    check_version(version).map_err(|e| vec![e])?;
+    let objective = check_prob_type(prob_type);
+    let (declarations, constraints) = match (
+        section(variables, "variables"),
+        section(constraints, "constraints"),
+    ) {
+        (Ok(d), Ok(c)) => (d, c),
+        (d, c) => {
+            let errors = [d.err(), c.err(), objective.err()];
+            return Err(errors.into_iter().flatten().collect());
         }
-        _ => return malformed("the version section is (version 1)"),
-    }
-    let objective = check_prob_type(prob_type)?;
+    };
 
+    let mut errors = Vec::new();
     let mut reader = Reader {
         model: Model::new(),
         vars: HashMap::new(),
+        declared: Vec::new(),
     };
-    let mut declared = Vec::new();
-    for decl in section(variables, "variables")? {
-        let [name, lo, hi] = list(decl, "a variable declaration")? else {
-            return malformed(format!(
-                "a variable declaration is (name lower upper), got {decl}"
-            ));
-        };
-        let name = atom(name, "a variable name")?;
-        let var = reader.model.int_var_named(
-            name,
-            integer(lo, "a lower bound")?,
-            integer(hi, "an upper bound")?,
-        );
-        if reader.vars.insert(name.to_string(), var).is_some() {
-            return malformed(format!("duplicate variable '{name}'"));
+    for decl in declarations {
+        if let Err(e) = reader.declare(decl) {
+            errors.push(e);
         }
-        declared.push((name.to_string(), var));
     }
-
-    for c in section(constraints, "constraints")? {
-        reader.constraint(c)?;
+    for c in constraints {
+        if let Err(e) = reader.constraint(c) {
+            errors.push(e);
+        }
     }
-
     let prob_type = match objective {
-        Objective::Decide => ProbType::Decide,
-        Objective::Enumerate => ProbType::Enumerate,
-        Objective::Optimise { maximise, target } => {
-            let var = reader.var(&target)?;
-            if maximise {
-                ProbType::Maximize(var)
-            } else {
-                ProbType::Minimize(var)
+        Ok(Objective::Decide) => Some(ProbType::Decide),
+        Ok(Objective::Enumerate) => Some(ProbType::Enumerate),
+        Ok(Objective::Optimise { maximise, target }) => match reader.var(&target) {
+            Ok(var) if maximise => Some(ProbType::Maximize(var)),
+            Ok(var) => Some(ProbType::Minimize(var)),
+            Err(e) => {
+                errors.push(e);
+                None
             }
+        },
+        Err(e) => {
+            errors.push(e);
+            None
         }
     };
-    let scp = ScpModel {
-        variables: declared,
-        prob_type,
-    };
-    Ok((reader.model, scp))
+
+    match prob_type {
+        Some(prob_type) if errors.is_empty() => {
+            let scp = ScpModel {
+                variables: reader.declared,
+                prob_type,
+            };
+            Ok((reader.model, scp))
+        }
+        _ => {
+            errors.sort_by_key(|e| e.span.start.offset);
+            Err(errors)
+        }
+    }
+}
+
+fn check_version(e: &SExpr) -> Result<(), ScpError> {
+    match section(e, "version")? {
+        [v] if integer(v, "the version")? == 1 => Ok(()),
+        [v] => malformed(
+            v,
+            format!("unsupported version {v}: only version 1 is accepted"),
+        ),
+        _ => malformed(e, "the version section is (version 1)"),
+    }
 }
 
 /// The prob_type section, checked before anything is built. An objective
@@ -168,22 +320,23 @@ enum Objective {
 
 fn check_prob_type(e: &SExpr) -> Result<Objective, ScpError> {
     let [spec] = section(e, "prob_type")? else {
-        return malformed("the prob_type section takes exactly one specification");
+        return malformed(e, "the prob_type section takes exactly one specification");
     };
-    match spec {
-        SExpr::Atom(a) if a == "decide" => Ok(Objective::Decide),
-        SExpr::Atom(a) if a == "enumerate" => Ok(Objective::Enumerate),
-        SExpr::Atom(a) => malformed(format!("unknown prob_type '{a}'")),
-        SExpr::List(parts) => match parts.as_slice() {
-            [SExpr::Atom(dir), target @ SExpr::Atom(_)]
-                if dir == "minimize" || dir == "maximize" =>
+    match &spec.node {
+        Node::Atom(a) if a == "decide" => Ok(Objective::Decide),
+        Node::Atom(a) if a == "enumerate" => Ok(Objective::Enumerate),
+        Node::Atom(a) => malformed(spec, format!("unknown prob_type '{a}'")),
+        Node::List(parts) => match parts.as_slice() {
+            [dir, target]
+                if matches!(dir.as_atom(), Some("minimize" | "maximize"))
+                    && target.as_atom().is_some() =>
             {
                 Ok(Objective::Optimise {
-                    maximise: dir == "maximize",
+                    maximise: dir.as_atom() == Some("maximize"),
                     target: target.clone(),
                 })
             }
-            _ => malformed("an objective is (minimize var) or (maximize var)"),
+            _ => malformed(spec, "an objective is (minimize var) or (maximize var)"),
         },
     }
 }
@@ -191,9 +344,37 @@ fn check_prob_type(e: &SExpr) -> Result<Objective, ScpError> {
 struct Reader {
     model: Model,
     vars: HashMap<String, VarId>,
+    /// Each declared variable, in declaration order.
+    declared: Vec<(String, VarId)>,
 }
 
 impl Reader {
+    /// Declare `(name lower upper)`. A name with bad bounds is still
+    /// declared, with a placeholder domain, so that its uses aren't
+    /// reported as unknown variables as well.
+    fn declare(&mut self, decl: &SExpr) -> Result<(), ScpError> {
+        let shape = "a variable declaration is (name lower upper)";
+        let parts = list(decl, "a variable declaration")?;
+        let Some(name) = parts.first() else {
+            return malformed(decl, shape);
+        };
+        let name_text = atom(name, "a variable name")?;
+        if self.vars.contains_key(name_text) {
+            return malformed(name, format!("duplicate variable '{name_text}'"));
+        }
+        let bounds = match parts {
+            [_, lo, hi] => {
+                integer(lo, "a lower bound").and_then(|lo| Ok((lo, integer(hi, "an upper bound")?)))
+            }
+            _ => malformed(decl, shape),
+        };
+        let (lo, hi) = *bounds.as_ref().unwrap_or(&(0, 0));
+        let var = self.model.int_var_named(name_text, lo, hi);
+        self.vars.insert(name_text.to_string(), var);
+        self.declared.push((name_text.to_string(), var));
+        bounds.map(|_| ())
+    }
+
     /// A declared variable, or an integer constant standing in for one.
     fn var(&mut self, e: &SExpr) -> Result<VarId, ScpError> {
         let a = atom(e, "a variable")?;
@@ -202,7 +383,7 @@ impl Reader {
         }
         match parse_integer(a) {
             Some(value) => Ok(self.model.constant(value)),
-            None => malformed(format!("unknown variable '{a}'")),
+            None => malformed(e, format!("unknown variable '{a}'")),
         }
     }
 
@@ -210,17 +391,23 @@ impl Reader {
         list(e, what)?.iter().map(|v| self.var(v)).collect()
     }
 
-    /// The value of an integer constant, or `None` for a variable.
-    fn constant(&mut self, e: &SExpr) -> Result<Option<i64>, ScpError> {
+    /// A cumulative length, height or capacity: a constant, not negative.
+    fn amount(&mut self, e: &SExpr, what: &str) -> Result<i64, ScpError> {
         let v = self.var(e)?;
-        Ok(self.model.constant_value(v))
+        let Some(value) = self.model.constant_value(v) else {
+            let message =
+                "cumulative with variable lengths, heights or capacity isn't supported yet";
+            return Err(error(ErrorKind::Unsupported, e, message));
+        };
+        if value < 0 {
+            return malformed(e, format!("{what} can't be negative, got {value}"));
+        }
+        Ok(value)
     }
 
-    /// The values of a list of integer constants, or `None` if any of them
-    /// is a variable.
-    fn constant_list(&mut self, e: &SExpr, what: &str) -> Result<Option<Vec<i64>>, ScpError> {
-        let vars = self.var_list(e, what)?;
-        Ok(vars.iter().map(|&v| self.model.constant_value(v)).collect())
+    fn amounts(&mut self, e: &SExpr, what: &str) -> Result<Vec<i64>, ScpError> {
+        let items = list(e, &format!("a cumulative {what} list"))?;
+        items.iter().map(|item| self.amount(item, what)).collect()
     }
 
     /// Add `coeff * e` to a sum. A constant goes into the sum's constant part
@@ -232,30 +419,35 @@ impl Reader {
             return Ok(());
         }
         let Some(value) = parse_integer(a) else {
-            return malformed(format!("unknown variable '{a}'"));
+            return malformed(e, format!("unknown variable '{a}'"));
         };
-        let product = coeff.checked_mul(value);
-        sum.constant = product
+        sum.constant = coeff
+            .checked_mul(value)
             .and_then(|p| sum.constant.checked_add(p))
-            .ok_or_else(|| ScpError::Malformed("integer overflow in a linear constraint".into()))?;
+            .ok_or_else(|| overflow(e))?;
         Ok(())
     }
 
-    fn post(&mut self, label: &str, c: impl Constraint + 'static) -> Result<(), ScpError> {
+    fn post(&mut self, label: &SExpr, c: impl Constraint + 'static) -> Result<(), ScpError> {
+        let name = atom(label, "a constraint label")?;
         self.model
-            .post_named(label, c)
-            .or_else(|e| malformed(e.to_string()))
+            .post_named(name, c)
+            .or_else(|e| malformed(label, e.to_string()))
     }
 
     /// One constraint: `(label op args...)`.
     fn constraint(&mut self, c: &SExpr) -> Result<(), ScpError> {
         let terms = list(c, "a constraint")?;
-        let [label, op, args @ ..] = terms else {
-            return malformed(format!("a constraint is (label op ...), got {c}"));
+        let [label, keyword, args @ ..] = terms else {
+            return malformed(c, "a constraint is (label op ...)");
         };
-        let label = atom(label, "a constraint label")?;
-        let op = atom(op, "a constraint keyword")?;
-        let wrong = || malformed(format!("wrong arguments for '{op}' in {c}"));
+        atom(label, "a constraint label")?;
+        let op = atom(keyword, "a constraint keyword")?;
+        if !CONSTRAINTS.iter().any(|k| k.keyword == op) {
+            let message = format!("unsupported constraint '{op}'");
+            return Err(error(ErrorKind::Unsupported, keyword, message));
+        }
+        let wrong = || malformed(c, format!("wrong arguments for '{op}'"));
 
         match op {
             "not_equals" => {
@@ -267,7 +459,7 @@ impl Reader {
                 let [x, y] = args else { return wrong() };
                 // x - y = 0
                 let sum = self.sum_of(&[(1, x), (-1, y)])?;
-                self.post(label, sum.eq(0)?)
+                self.post(label, sum.eq(0).ok_or_else(|| overflow(c))?)
             }
             "less_than" | "less_equal" | "greater_than" | "greater_equal" => {
                 let [x, y] = args else { return wrong() };
@@ -279,24 +471,24 @@ impl Reader {
                     _ => (y, x, 0),               //   x >= y  is  y - x <= 0
                 };
                 let sum = self.sum_of(&[(1, a), (-1, b)])?;
-                self.post(label, sum.le(k)?)
+                self.post(label, sum.le(k).ok_or_else(|| overflow(c))?)
             }
             "plus" | "minus" => {
                 // (label plus a b r) is a + b = r; minus is a - b = r.
                 let [a, b, r] = args else { return wrong() };
                 let sign = if op == "plus" { 1 } else { -1 };
                 let sum = self.sum_of(&[(1, a), (sign, b), (-1, r)])?;
-                self.post(label, sum.eq(0)?)
+                self.post(label, sum.eq(0).ok_or_else(|| overflow(c))?)
             }
             "lin_equals" | "lin_less_equal" | "lin_less_than" | "lin_greater_equal"
             | "lin_greater_than" => {
-                let [pairs, value] = args else { return wrong() };
-                let pairs = list(pairs, "a linear coefficient/variable list")?;
+                let [pairs_list, value] = args else {
+                    return wrong();
+                };
+                let pairs = list(pairs_list, "a linear coefficient/variable list")?;
                 if pairs.len() % 2 != 0 {
-                    return malformed(format!(
-                        "'{op}' needs coefficient/variable pairs, got {}",
-                        SExpr::List(pairs.to_vec())
-                    ));
+                    let message = format!("'{op}' needs coefficient/variable pairs");
+                    return malformed(pairs_list, message);
                 }
                 let mut sum = Sum::default();
                 for pair in pairs.chunks(2) {
@@ -305,13 +497,13 @@ impl Reader {
                 }
                 let value = integer(value, "a right-hand side")?;
                 let constraint = match op {
-                    "lin_equals" => sum.eq(value)?,
-                    "lin_less_equal" => sum.le(value)?,
-                    "lin_less_than" => sum.le(step(value, -1)?)?,
-                    "lin_greater_equal" => sum.ge(value)?,
-                    _ => sum.ge(step(value, 1)?)?,
+                    "lin_equals" => sum.eq(value),
+                    "lin_less_equal" => sum.le(value),
+                    "lin_less_than" => value.checked_sub(1).and_then(|v| sum.le(v)),
+                    "lin_greater_equal" => sum.ge(value),
+                    _ => value.checked_add(1).and_then(|v| sum.ge(v)),
                 };
-                self.post(label, constraint)
+                self.post(label, constraint.ok_or_else(|| overflow(c))?)
             }
             "all_different" => {
                 let [vars] = args else { return wrong() };
@@ -334,8 +526,7 @@ impl Reader {
                     return wrong();
                 };
                 let vars = self.var_list(vars, "a regular variable list")?;
-                let automaton = automaton(num_states, edges, finals)
-                    .map_err(|e| ScpError::Malformed(format!("in constraint '{label}': {e}")))?;
+                let automaton = automaton(num_states, edges, finals)?;
                 self.post(label, Regular::new(&vars, automaton))
             }
             "cumulative" => {
@@ -343,27 +534,19 @@ impl Reader {
                     return wrong();
                 };
                 let starts = self.var_list(starts, "a cumulative start list")?;
-                let lengths = self.constant_list(lengths, "a cumulative length list")?;
-                let heights = self.constant_list(heights, "a cumulative height list")?;
-                let capacity = self.constant(capacity)?;
-                let (Some(lengths), Some(heights), Some(capacity)) = (lengths, heights, capacity)
-                else {
-                    return Err(ScpError::Unsupported(
-                        "cumulative with variable lengths, heights or capacity".into(),
-                    ));
-                };
-                if starts.len() != lengths.len() || starts.len() != heights.len() {
-                    return malformed(format!("one length and one height per task in {c}"));
+                let lengths_given = self.amounts(lengths, "length")?;
+                let heights_given = self.amounts(heights, "height")?;
+                let capacity = self.amount(capacity, "a capacity")?;
+                if lengths_given.len() != starts.len() {
+                    return malformed(lengths, "one length per start");
                 }
-                if capacity < 0 || lengths.iter().chain(&heights).any(|&v| v < 0) {
-                    return malformed(format!("negative length, height or capacity in {c}"));
+                if heights_given.len() != starts.len() {
+                    return malformed(heights, "one height per start");
                 }
-                self.post(
-                    label,
-                    Cumulative::new(&starts, &lengths, &heights, capacity),
-                )
+                let constraint = Cumulative::new(&starts, &lengths_given, &heights_given, capacity);
+                self.post(label, constraint)
             }
-            _ => Err(ScpError::Unsupported(op.to_string())),
+            _ => unreachable!("'{op}' is in CONSTRAINTS but has no case here"),
         }
     }
 
@@ -383,32 +566,24 @@ struct Sum {
     constant: i64,
 }
 
+/// Each of these is `None` if moving the constant across overflows.
 impl Sum {
-    /// The right-hand side once the constant part has moved across.
-    fn rhs(&self, value: i64) -> Result<i64, ScpError> {
-        value
-            .checked_sub(self.constant)
-            .ok_or_else(|| ScpError::Malformed("integer overflow in a linear constraint".into()))
+    fn le(&self, value: i64) -> Option<Linear> {
+        Some(Linear::le(&self.terms, value.checked_sub(self.constant)?))
     }
 
-    fn le(&self, value: i64) -> Result<Linear, ScpError> {
-        Ok(Linear::le(&self.terms, self.rhs(value)?))
+    fn ge(&self, value: i64) -> Option<Linear> {
+        Some(Linear::ge(&self.terms, value.checked_sub(self.constant)?))
     }
 
-    fn ge(&self, value: i64) -> Result<Linear, ScpError> {
-        Ok(Linear::ge(&self.terms, self.rhs(value)?))
-    }
-
-    fn eq(&self, value: i64) -> Result<Linear, ScpError> {
-        Ok(Linear::eq(&self.terms, self.rhs(value)?))
+    fn eq(&self, value: i64) -> Option<Linear> {
+        Some(Linear::eq(&self.terms, value.checked_sub(self.constant)?))
     }
 }
 
-/// `value + by`, for turning a strict inequality into a non-strict one.
-fn step(value: i64, by: i64) -> Result<i64, ScpError> {
-    value
-        .checked_add(by)
-        .ok_or_else(|| ScpError::Malformed("integer overflow in a linear constraint".into()))
+fn overflow(at: &SExpr) -> ScpError {
+    let message = "integer overflow in a linear constraint";
+    error(ErrorKind::Malformed, at, message)
 }
 
 fn cell(e: &SExpr) -> Result<Cell, ScpError> {
@@ -419,27 +594,39 @@ fn cell(e: &SExpr) -> Result<Cell, ScpError> {
 }
 
 fn list<'a>(e: &'a SExpr, what: &str) -> Result<&'a [SExpr], ScpError> {
-    e.as_list()
-        .ok_or_else(|| ScpError::Malformed(format!("expected a list for {what}, got '{e}'")))
+    e.as_list().ok_or_else(|| {
+        error(
+            ErrorKind::Malformed,
+            e,
+            format!("expected a list for {what}, got '{e}'"),
+        )
+    })
 }
 
 fn atom<'a>(e: &'a SExpr, what: &str) -> Result<&'a str, ScpError> {
-    e.as_atom()
-        .ok_or_else(|| ScpError::Malformed(format!("expected an atom for {what}, got {e}")))
+    e.as_atom().ok_or_else(|| {
+        error(
+            ErrorKind::Malformed,
+            e,
+            format!("expected an atom for {what}"),
+        )
+    })
 }
 
 /// A top-level section `(tag items...)`: check the tag, return the items.
 fn section<'a>(e: &'a SExpr, tag: &str) -> Result<&'a [SExpr], ScpError> {
     match e.as_list() {
-        Some([SExpr::Atom(t), items @ ..]) if t == tag => Ok(items),
-        _ => malformed(format!("expected a ({tag} ...) section, got {e}")),
+        Some([t, items @ ..]) if t.as_atom() == Some(tag) => Ok(items),
+        _ => malformed(e, format!("expected a ({tag} ...) section")),
     }
 }
 
 fn integer(e: &SExpr, what: &str) -> Result<i64, ScpError> {
     let a = atom(e, what)?;
-    parse_integer(a)
-        .ok_or_else(|| ScpError::Malformed(format!("expected an integer for {what}, got '{a}'")))
+    parse_integer(a).ok_or_else(|| {
+        let message = format!("expected an integer for {what}, got '{a}'");
+        error(ErrorKind::Malformed, e, message)
+    })
 }
 
 /// An optional minus sign and digits; `+5`, `0x10` and friends are not
@@ -456,35 +643,47 @@ fn parse_integer(a: &str) -> Option<i64> {
 /// list of `(symbol target)` edges per state in order, then the accepting
 /// states. The start state is 0. A state may list several edges on the
 /// same symbol.
-fn automaton(num_states: &SExpr, edges: &SExpr, finals: &SExpr) -> Result<Automaton, String> {
-    let state = |e: &SExpr, what: &str| -> Result<usize, String> {
-        let q = integer(e, what).map_err(|e| e.to_string())?;
-        usize::try_from(q).map_err(|_| format!("{what} can't be negative, got {q}"))
+fn automaton(num_states: &SExpr, edges: &SExpr, finals: &SExpr) -> Result<Automaton, ScpError> {
+    let count = integer(num_states, "the number of states")?;
+    let n = match usize::try_from(count) {
+        Ok(n) if n > 0 => n,
+        _ => {
+            return malformed(
+                num_states,
+                format!("an automaton needs states, got {count}"),
+            );
+        }
     };
-    let num_states = state(num_states, "the number of states")?;
-    let per_state = list(edges, "the per-state edge lists").map_err(|e| e.to_string())?;
-    if per_state.len() != num_states {
-        return Err(format!(
-            "{num_states} states but {} edge lists",
-            per_state.len()
-        ));
+    let state = |e: &SExpr, what: &str| -> Result<usize, ScpError> {
+        let q = integer(e, what)?;
+        match usize::try_from(q) {
+            Ok(q) if q < n => Ok(q),
+            _ => malformed(
+                e,
+                format!("{what} must be a state from 0 to {}, got {q}", n - 1),
+            ),
+        }
+    };
+    let per_state = list(edges, "the per-state edge lists")?;
+    if per_state.len() != n {
+        let message = format!("{n} states but {} edge lists", per_state.len());
+        return malformed(edges, message);
     }
     let mut transitions = Vec::new();
     for (q, edge_list) in per_state.iter().enumerate() {
-        for edge in list(edge_list, "a state's edge list").map_err(|e| e.to_string())? {
-            let [symbol, target] = list(edge, "an edge").map_err(|e| e.to_string())? else {
-                return Err(format!("an edge is (symbol target), got {edge}"));
+        for edge in list(edge_list, "a state's edge list")? {
+            let [symbol, target] = list(edge, "an edge")? else {
+                return malformed(edge, "an edge is (symbol target)");
             };
-            let symbol = integer(symbol, "an edge's symbol").map_err(|e| e.to_string())?;
+            let symbol = integer(symbol, "an edge's symbol")?;
             transitions.push((q, symbol, state(target, "an edge's target")?));
         }
     }
-    let finals = list(finals, "the accepting states")
-        .map_err(|e| e.to_string())?
+    let finals = list(finals, "the accepting states")?
         .iter()
         .map(|f| state(f, "an accepting state"))
         .collect::<Result<Vec<_>, _>>()?;
-    Automaton::new(num_states, &transitions, &finals).map_err(|e| e.to_string())
+    Ok(Automaton::new(n, &transitions, &finals).expect("states checked above"))
 }
 
 #[cfg(test)]
@@ -502,6 +701,11 @@ mod tests {
     fn count(text: &str) -> u64 {
         let (model, _) = read_scp(text).unwrap();
         solver::enumerate(&model, &Config::default(), |_| ControlFlow::Continue(())).unwrap()
+    }
+
+    /// The text an error points at.
+    fn shown<'a>(text: &'a str, e: &ScpError) -> &'a str {
+        &text[e.span.start.offset..e.span.end.offset]
     }
 
     // --- Document structure --------------------------------------------------
@@ -531,10 +735,10 @@ mod tests {
                           (c2 multiply x y p))
                       (prob_type (maximize p)))";
         // We don't have multiply yet: that's Unsupported, not Malformed.
-        assert_eq!(
-            read_scp(text).unwrap_err(),
-            ScpError::Unsupported("multiply".into())
-        );
+        let e = read_scp(text).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Unsupported);
+        assert_eq!(e.message, "unsupported constraint 'multiply'");
+        assert_eq!(shown(text, &e), "multiply");
     }
 
     #[test]
@@ -555,13 +759,13 @@ mod tests {
         ];
         for text in bad {
             assert!(
-                matches!(read_scp(text), Err(ScpError::Malformed(_))),
+                matches!(read_scp(text), Err(e) if e.kind == ErrorKind::Malformed),
                 "{text}"
             );
         }
         assert!(matches!(
             read_scp("( (version 1)"),
-            Err(ScpError::Syntax(_))
+            Err(e) if e.kind == ErrorKind::Syntax
         ));
     }
 
@@ -569,11 +773,113 @@ mod tests {
     fn unknown_and_reified_keywords_are_unsupported() {
         for op in ["multiply", "not_equals_iff", "lin_not_equals", "wibble"] {
             let text = doc("(x 0 1) (y 0 1)", &format!("(c {op} x y)"), "decide");
-            assert_eq!(
-                read_scp(&text).unwrap_err(),
-                ScpError::Unsupported(op.into())
-            );
+            let e = read_scp(&text).unwrap_err();
+            assert_eq!(e.kind, ErrorKind::Unsupported, "{op}");
+            assert_eq!(shown(&text, &e), op);
         }
+    }
+
+    #[test]
+    fn errors_point_at_the_text_at_fault() {
+        // (variables, constraints, prob_type, the text the error points at)
+        let cases = [
+            ("(x 0 1)", "(c not_equals x z)", "decide", "z"),
+            ("(x 0 a)", "", "decide", "a"),
+            ("(x 0 1) (x 0 1)", "", "decide", "x"),
+            ("(x 0)", "", "decide", "(x 0)"),
+            ("(x 0 1)", "(c not_equals x)", "decide", "(c not_equals x)"),
+            (
+                "(x 0 1) (y 0 1)",
+                "(c not_equals x y) (c equals x y)",
+                "decide",
+                "c",
+            ),
+            ("(x 0 1)", "(c lin_equals (1 x 2) 0)", "decide", "(1 x 2)"),
+            ("(x 0 1)", "(c lin_equals (1 x) zero)", "decide", "zero"),
+            ("(x 0 1)", "", "(minimize nope)", "nope"),
+            ("(x 0 1)", "", "wibble", "wibble"),
+            (
+                "(s 0 3) (d 1 2)",
+                "(c cumulative (s) (d) (1) 1)",
+                "decide",
+                "d",
+            ),
+            ("(s 0 3)", "(c cumulative (s) (2) (-1) 1)", "decide", "-1"),
+            (
+                "(s 0 3)",
+                "(c cumulative (s) (2 3) (1) 1)",
+                "decide",
+                "(2 3)",
+            ),
+            ("(x 0 1)", "(c regular (x) 1 (((0 1))) (0))", "decide", "1"),
+            ("(x 0 1)", "(c regular (x) 1 (((0 0))) (2))", "decide", "2"),
+        ];
+        for (vars, cons, prob, at) in cases {
+            let text = doc(vars, cons, prob);
+            let e = read_scp(&text).unwrap_err();
+            assert_eq!(shown(&text, &e), at, "{text}: {e}");
+        }
+        let e = read_scp("( (version 2) (variables) (constraints) (prob_type decide) )");
+        assert_eq!(
+            e.unwrap_err().to_string(),
+            "line 1, column 12: unsupported version 2: only version 1 is accepted"
+        );
+    }
+
+    #[test]
+    fn check_reports_every_error_in_order() {
+        let text = "( (version 1)
+              (variables (x 0 a) (y 0 1))
+              (constraints
+                  (c1 not_equals x z)
+                  (c2 not_equals x y)
+                  (c3 wibble x y)
+                  (c4 all_different (x y w)))
+              (prob_type (minimize nope)) )";
+        let errors = check_scp(text);
+        let found: Vec<_> = errors
+            .iter()
+            .map(|e| (e.span.start.line, shown(text, e), e.kind))
+            .collect();
+        // x's bad bound doesn't make x unknown later on.
+        assert_eq!(
+            found,
+            [
+                (2, "a", ErrorKind::Malformed),
+                (4, "z", ErrorKind::Malformed),
+                (6, "wibble", ErrorKind::Unsupported),
+                (7, "w", ErrorKind::Malformed),
+                (8, "nope", ErrorKind::Malformed),
+            ]
+        );
+        // read_scp gives the first of them.
+        assert_eq!(read_scp(text).unwrap_err(), errors[0]);
+    }
+
+    #[test]
+    fn check_accepts_what_read_accepts() {
+        assert!(check_scp(&doc("(x 0 1) (y 0 1)", "(c not_equals x y)", "enumerate")).is_empty());
+        let syntax = check_scp("( (version 1)");
+        assert_eq!(syntax.len(), 1);
+        assert_eq!(syntax[0].kind, ErrorKind::Syntax);
+    }
+
+    #[test]
+    fn every_listed_constraint_reads_its_example() {
+        for k in CONSTRAINTS {
+            let c = format!("(c {} {})", k.keyword, k.example);
+            let text = doc("(x 0 3) (y 0 3) (z 0 3)", &c, "enumerate");
+            let (model, _) = read_scp(&text).unwrap_or_else(|e| panic!("{c}: {e}"));
+            assert_eq!(model.constraint_names(), ["c"], "{c}");
+        }
+        let mut keywords: Vec<_> = CONSTRAINTS.iter().map(|k| k.keyword).collect();
+        keywords.sort();
+        keywords.dedup();
+        assert_eq!(
+            keywords.len(),
+            CONSTRAINTS.len(),
+            "a keyword is listed twice"
+        );
     }
 
     #[test]
