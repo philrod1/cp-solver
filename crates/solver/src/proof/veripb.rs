@@ -296,6 +296,18 @@ impl ProofLogger for VeriPb {
         line
     }
 
+    fn delete(&mut self, lines: &[Line]) {
+        if lines.is_empty() {
+            return;
+        }
+        self.line.push_str("del id");
+        for line in lines {
+            write!(self.line, " @{}", line.0).unwrap();
+        }
+        self.line.push_str(" ;");
+        self.emit();
+    }
+
     fn comment(&mut self, text: &str) {
         self.emit_text(&format!("% {text}"));
     }

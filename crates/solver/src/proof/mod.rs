@@ -254,6 +254,10 @@ pub(crate) trait ProofLogger {
         unreachable!("only called while logging")
     }
 
+    /// Delete lines nothing will cite again, such as a step's helpers once
+    /// the step is logged, so the checker carries fewer constraints.
+    fn delete(&mut self, _lines: &[Line]) {}
+
     /// A comment in the proof.
     fn comment(&mut self, _text: &str) {}
 
