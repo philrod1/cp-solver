@@ -240,10 +240,10 @@ impl ProofLogger for VeriPb {
         self.emit_step(rule, &clause);
     }
 
-    fn rup(&mut self, reason: &[Lit], clause: &[PbLit]) {
+    fn rup(&mut self, reason: &[Lit], clause: &[PbLit]) -> Option<Line> {
         let mut lits: Vec<PbLit> = reason.iter().map(|&r| !self.atom(r)).collect();
         lits.extend_from_slice(clause);
-        self.emit_step(Rule::Rup, &Ineq::clause(lits));
+        Some(self.rup_line(&Ineq::clause(lits)))
     }
 
     fn linear(&self, terms: &[(i64, VarId)]) -> Vec<(i128, PbLit)> {

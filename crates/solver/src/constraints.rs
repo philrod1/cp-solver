@@ -24,7 +24,7 @@ use crate::domain::{Conflict, SparseDomain};
 use crate::engine::Engine;
 use crate::lit::Lit;
 use crate::model::VarId;
-use crate::proof::{Justification, NotEncodable, OpbEncoder, PbLit, ProofLogger, Reason};
+use crate::proof::{Justification, Line, NotEncodable, OpbEncoder, PbLit, ProofLogger, Reason};
 use crate::store::{DomainStore, Event};
 
 /// A constraint as stated in a model.
@@ -174,8 +174,9 @@ impl PropagationContext<'_> {
     /// Log "`reason` ⇒ at least one of `clause`", checked by RUP. For a
     /// propagator whose reasoning needs intermediate facts about its own
     /// encoding's flags, logged before the inference that uses them.
-    pub(crate) fn rup(&mut self, reason: &[Lit], clause: &[PbLit]) {
-        self.proof.rup(reason, clause);
+    /// Returns the line, if one was written, for deleting once it has served.
+    pub(crate) fn rup(&mut self, reason: &[Lit], clause: &[PbLit]) -> Option<Line> {
+        self.proof.rup(reason, clause)
     }
 }
 

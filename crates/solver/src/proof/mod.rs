@@ -215,8 +215,10 @@ pub(crate) trait ProofLogger {
 
     /// `reason` implies at least one of `clause`, by RUP. For constraints
     /// whose reasoning involves their own encoding's variables (flags), which
-    /// a [`Lit`] can't name.
-    fn rup(&mut self, _reason: &[Lit], _clause: &[PbLit]) {}
+    /// a [`Lit`] can't name. Returns the line, labelled, if one was written.
+    fn rup(&mut self, _reason: &[Lit], _clause: &[PbLit]) -> Option<Line> {
+        None
+    }
 
     // The rest are for constraints that derive facts about their own
     // encoding with no reason: lines true everywhere, written once and
