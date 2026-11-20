@@ -171,7 +171,13 @@ impl LessEqual {
     /// no `skip`, a row the bounds contradict. A bound the term's bits
     /// imply anyway (a 0/1 variable at 0) is left out, and its bits with
     /// it: they can't make the line any weaker than the bound would.
-    fn justify(&self, ctx: &mut PropagationContext<'_>, row: &Line, skip: Option<usize>) {
+    /// Returns the line, if any, to delete once the inference is logged.
+    fn justify(
+        &self,
+        ctx: &mut PropagationContext<'_>,
+        row: &Line,
+        skip: Option<usize>,
+    ) -> Option<Line> {
         let mut pol = Pol::default();
         pol.add(row, 1);
         let mut any_bound = false;
@@ -197,9 +203,7 @@ impl LessEqual {
         }
         // With nothing added the pol would only restate the row, which
         // the RUP can use as it stands.
-        if any_bound {
-            ctx.proof.pol(&pol);
-        }
+        any_bound.then(|| ctx.proof.pol(&pol))
     }
 }
 
@@ -236,10 +240,10 @@ impl Propagator for LessEqual {
         let cof = i128::from(self.cof);
         if least > cof {
             let reason = self.reason(None);
-            if let Some(row) = &row {
-                self.justify(ctx, row, None);
-            }
-            return ctx.fail(Justification::Rup(Reason::Lits(&reason)));
+            let helper = row.as_ref().and_then(|row| self.justify(ctx, row, None));
+            let result = ctx.fail(Justification::Rup(Reason::Lits(&reason)));
+            ctx.proof.delete(helper.as_slice());
+            return result;
         }
 
         // Tightening one term's bound moves the other side of its domain,
@@ -259,19 +263,21 @@ impl Propagator for LessEqual {
                 continue;
             }
             let reason = self.reason(Some(j));
-            if let Some(row) = &row {
-                self.justify(ctx, row, Some(j));
-            }
+            let helper = row.as_ref().and_then(|row| self.justify(ctx, row, Some(j)));
             let why = Justification::Rup(Reason::Lits(&reason));
-            if a > 0 {
-                ctx.set_upper(x, bound, why)?;
+            let result = if a > 0 {
+                ctx.set_upper(x, bound, why)
             } else {
-                ctx.set_lower(x, bound, why)?;
-            }
+                ctx.set_lower(x, bound, why)
+            };
+            // The inference is logged even when it empties the domain.
+            ctx.proof.delete(helper.as_slice());
+            result?;
         }
         Ok(())
     }
 }
+
 /// `⌊n / d⌋`. Rust's `/` rounds toward zero, which is wrong when the
 /// signs differ: -7 / 2 is -3, but ⌊-3.5⌋ = -4.
 fn floor_div(n: i128, d: i128) -> i128 {

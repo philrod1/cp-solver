@@ -272,17 +272,27 @@ fn a_table_with_no_rows() {
 
 // ---- linear ----
 
-/// The proof for `name` has no unchecked assertions, and some `pol` steps.
+/// The proof for `name` has no unchecked assertions, and some `pol` steps,
+/// each deleted once it has been used.
 fn fully_checked(name: &str) {
     let pbp = std::fs::read_to_string(stem(name).with_extension("pbp")).unwrap();
     assert!(
         !pbp.lines().any(|l| l.starts_with("a ")),
         "{name}: unchecked steps"
     );
-    assert!(
-        pbp.lines().any(|l| l.contains(" pol ")),
-        "{name}: no pol steps"
-    );
+    // The helpers' labels; an atom's pin is a `pol` too, and stays.
+    let pols: Vec<&str> = pbp
+        .lines()
+        .filter(|l| l.starts_with("@pl") && l.contains(" pol "))
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    assert!(!pols.is_empty(), "{name}: no pol steps");
+    let deleted: Vec<&str> = pbp
+        .lines()
+        .filter_map(|l| l.strip_prefix("del id "))
+        .flat_map(|l| l.split_whitespace().filter(|w| w.starts_with('@')))
+        .collect();
+    assert_eq!(pols, deleted, "{name}: each pol line deleted after use");
 }
 
 #[test]
