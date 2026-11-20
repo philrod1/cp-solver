@@ -7,6 +7,7 @@
 mod all_different;
 mod cumulative;
 mod linear;
+mod min_max;
 mod not_equal;
 mod regular;
 mod table;
@@ -14,6 +15,7 @@ mod table;
 pub use all_different::AllDifferent;
 pub use cumulative::Cumulative;
 pub use linear::Linear;
+pub use min_max::MinMax;
 pub use not_equal::NotEqual;
 pub use regular::{Automaton, AutomatonError, Regular, regular_by_tables};
 pub use table::{Cell, Table};

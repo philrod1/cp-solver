@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::{env, fs};
 
 use lang::{CONSTRAINTS, ConstraintKind, ErrorKind, ProbType, ScpError, ScpModel};
-use solver::{Config, Outcome, Solution};
+use solver::{Config, Objective, Outcome, Solution};
 
 const USAGE: &str = "\
 usage: cps <model.scp> [--proof <path-stem>]
@@ -141,9 +141,20 @@ fn solve(path: &str, source: &str, config: &Config) -> Result<(), Failure> {
             .map_err(solver_error)?;
             println!("{count} solutions");
         }
-        ProbType::Minimize(_) | ProbType::Maximize(_) => {
-            eprintln!("{path}: optimisation problems aren't supported yet");
-            return Err(Failure::Model);
+        ProbType::Minimize(x) | ProbType::Maximize(x) => {
+            let objective = match scp.prob_type {
+                ProbType::Minimize(_) => Objective::Minimize(x),
+                _ => Objective::Maximize(x),
+            };
+            // Each solution as it is found, each better than the last.
+            let outcome = solver::optimise(&model, objective, config, |sol| {
+                print_solution(&scp, sol);
+            })
+            .map_err(solver_error)?;
+            match outcome {
+                Outcome::Satisfiable(best) => println!("OPTIMUM {}", best.value(x)),
+                _ => println!("UNSATISFIABLE"),
+            }
         }
     }
     Ok(())

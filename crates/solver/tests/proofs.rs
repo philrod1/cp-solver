@@ -12,8 +12,8 @@ use std::sync::OnceLock;
 
 use proptest::prelude::*;
 use solver::{
-    AllDifferent, Automaton, Cell, Config, Cumulative, Linear, Model, NotEqual, Outcome, Regular,
-    Table, VarId, VarOrder, enumerate, solve,
+    AllDifferent, Automaton, Cell, Config, Cumulative, Linear, MinMax, Model, NotEqual, Objective,
+    Outcome, Regular, Table, VarId, VarOrder, enumerate, optimise, solve,
 };
 
 /// The VeriPB command, if there is one.
@@ -529,6 +529,243 @@ fn cumulative_needs_several_steps() {
     }
 }
 
+// ---- min and max ----
+
+#[test]
+fn array_min_and_max_like_gcs_cases() {
+    // GCS's array_min_sat, array_max_sat (X, Y, Z, R in 0..=2) and
+    // array_min_unsat (R in 3..=5, out of every variable's reach).
+    let cases = [
+        ("min_sat", true, (0, 2)),
+        ("max_sat", false, (0, 2)),
+        ("min_unsat", true, (3, 5)),
+    ];
+    for (name, min, (lo, hi)) in cases {
+        let mut m = Model::new();
+        let xs: Vec<VarId> = ["X", "Y", "Z"]
+            .iter()
+            .map(|n| m.int_var_named(n, 0, 2))
+            .collect();
+        let r = m.int_var_named("R", lo, hi);
+        m.post_named(
+            "_1",
+            if min {
+                MinMax::min(&xs, r)
+            } else {
+                MinMax::max(&xs, r)
+            },
+        )
+        .unwrap();
+        let expected = count(&[(0, 2), (0, 2), (0, 2), (lo, hi)], &|v| {
+            let extreme = if min {
+                v[..3].iter().min()
+            } else {
+                v[..3].iter().max()
+            };
+            extreme == Some(&v[3])
+        });
+        for order in [VarOrder::InputOrder, VarOrder::SmallestDomain] {
+            let name = format!("array_{name}_{order:?}");
+            assert_eq!(enumerate_checked(&name, &m, order), expected);
+        }
+    }
+}
+
+/// A min/max model: a name, the variables' domains, the result's domain,
+/// and values knocked out as (variable index, value), the result last.
+type MinMaxCase = (
+    &'static str,
+    &'static [(i64, i64)],
+    (i64, i64),
+    &'static [(usize, i64)],
+);
+
+#[test]
+fn each_min_max_rule_is_justified() {
+    // Models where each rule must remove something at the root, so its
+    // helpers are in the proof.
+    let cases: [MinMaxCase; 3] = [
+        // A value of r no variable has: x, y in {1, 3}, r in 0..=4.
+        (
+            "result_support",
+            &[(1, 3), (1, 3)],
+            (0, 4),
+            &[(0, 2), (1, 2)],
+        ),
+        // Only x can meet r in {1, 2}: x loses 0, 3 and 4.
+        ("single_support", &[(0, 4), (5, 7)], (1, 2), &[]),
+        // r in {0, 3}: x = 1 or 2 can't be the minimum, nor sit above
+        // the 3 that y supplies.
+        (
+            "variable_support",
+            &[(0, 3), (2, 3)],
+            (0, 3),
+            &[(2, 1), (2, 2)],
+        ),
+    ];
+    for (name, domains, (lo, hi), holes) in cases {
+        let mut m = Model::new();
+        let xs: Vec<VarId> = domains
+            .iter()
+            .enumerate()
+            .map(|(i, &(a, b))| m.int_var_named(&format!("x{i}"), a, b))
+            .collect();
+        let r = m.int_var_named("r", lo, hi);
+        let all: Vec<VarId> = xs.iter().copied().chain([r]).collect();
+        for &(i, v) in holes {
+            let k = m.constant(v);
+            m.post(NotEqual::new(all[i], k));
+        }
+        m.post_named("mm", MinMax::min(&xs, r)).unwrap();
+        let mut ranges: Vec<(i64, i64)> = domains.to_vec();
+        ranges.push((lo, hi));
+        let expected = count(&ranges, &|v| {
+            holes.iter().all(|&(i, h)| v[i] != h)
+                && v[..v.len() - 1].iter().min() == Some(&v[v.len() - 1])
+        });
+        let name = format!("min_max_{name}");
+        assert_eq!(enumerate_checked(&name, &m, VarOrder::InputOrder), expected);
+        let pbp = std::fs::read_to_string(stem(&name).with_extension("pbp")).unwrap();
+        assert!(!deleted_labels(&pbp).is_empty(), "{name}: no helpers");
+    }
+}
+
+// ---- optimisation ----
+
+/// Optimise with a proof, check it, and return the best objective value.
+/// Each solution found must improve on the last, and VeriPB must agree on
+/// the optimum: `BOUNDS v <= obj <= v`, with `v` negated for a maximisation,
+/// which the proof minimises as its negation, and `INF` when there is no
+/// solution.
+fn optimise_checked(
+    name: &str,
+    model: &Model,
+    objective: Objective,
+    var_order: VarOrder,
+) -> Option<i64> {
+    let config = Config {
+        var_order,
+        ..config(name)
+    };
+    let (var, sign) = match objective {
+        Objective::Minimize(x) => (x, 1),
+        Objective::Maximize(x) => (x, -1),
+    };
+    let mut seen: Vec<i64> = Vec::new();
+    let outcome = optimise(model, objective, &config, |s| seen.push(s.value(var))).unwrap();
+    assert!(
+        seen.windows(2).all(|w| sign * w[1] < sign * w[0]),
+        "{name}: not improving: {seen:?}"
+    );
+    let best = match outcome {
+        Outcome::Satisfiable(s) => Some(s.value(var)),
+        _ => None,
+    };
+    assert_eq!(best, seen.last().copied(), "{name}");
+    if let Some(verdict) = check(&stem(name)) {
+        let expected = match best {
+            Some(v) => format!("BOUNDS {0} <= obj <= {0}", sign * v),
+            // No solutions: no finite bound on the objective.
+            None => "BOUNDS INF <= obj <= INF".to_string(),
+        };
+        assert!(verdict.ends_with(&expected), "{name}: {verdict}");
+    }
+    best
+}
+
+#[test]
+fn optimisation_like_gcs_cases() {
+    // GCS's lin_equals_{minimize,maximize,maximize_neg}_opt: x + y = 3 over
+    // 0..3, and x + y = 0 over -3..3, where x has a sign bit.
+    for order in [VarOrder::InputOrder, VarOrder::SmallestDomain] {
+        let mut m = Model::new();
+        let (x, y) = (m.int_var_named("X", 0, 3), m.int_var_named("Y", 0, 3));
+        m.post(Linear::eq(&[(x, 1), (y, 1)], 3));
+        let min = optimise_checked(
+            &format!("opt_min_{order:?}"),
+            &m,
+            Objective::Minimize(x),
+            order,
+        );
+        assert_eq!(min, Some(0));
+        let max = optimise_checked(
+            &format!("opt_max_{order:?}"),
+            &m,
+            Objective::Maximize(x),
+            order,
+        );
+        assert_eq!(max, Some(3));
+
+        let mut m = Model::new();
+        let (x, y) = (m.int_var_named("X", -3, 3), m.int_var_named("Y", -3, 3));
+        m.post(Linear::eq(&[(x, 1), (y, 1)], 0));
+        let neg = optimise_checked(
+            &format!("opt_neg_{order:?}"),
+            &m,
+            Objective::Maximize(x),
+            order,
+        );
+        assert_eq!(neg, Some(3));
+    }
+}
+
+#[test]
+fn optimisation_edge_cases() {
+    // A constant objective: its one value is best.
+    let mut m = Model::new();
+    let x = m.int_var_named("x", 0, 2);
+    let k = m.constant(5);
+    m.post(NotEqual::new(x, k));
+    let order = VarOrder::InputOrder;
+    assert_eq!(
+        optimise_checked("opt_constant", &m, Objective::Minimize(k), order),
+        Some(5)
+    );
+
+    // No solutions at all.
+    let mut m = Model::new();
+    let (x, y) = (m.int_var_named("x", 0, 1), m.int_var_named("y", 0, 1));
+    m.post(Linear::eq(&[(x, 1), (y, 1)], 5));
+    assert_eq!(
+        optimise_checked("opt_unsat", &m, Objective::Maximize(x), order),
+        None
+    );
+
+    // The first solution is already at the objective's bound.
+    let mut m = Model::new();
+    let (x, y) = (m.int_var_named("x", -2, 4), m.int_var_named("y", 0, 4));
+    m.post(Linear::le(&[(x, 1), (y, 1)], 4));
+    assert_eq!(
+        optimise_checked("opt_at_bound", &m, Objective::Minimize(x), order),
+        Some(-2)
+    );
+}
+
+#[test]
+fn moving_furniture_as_quickly_as_possible() {
+    // Four tasks on a resource of capacity 2, with the finish time `end`
+    // minimised: each task ends by `end`.
+    let (durations, heights) = ([3, 2, 2, 1], [2, 1, 1, 1]);
+    let mut m = Model::new();
+    let starts: Vec<VarId> = (0..4)
+        .map(|i| m.int_var_named(&format!("s{i}"), 0, 8))
+        .collect();
+    let end = m.int_var_named("end", 0, 9);
+    m.post(Cumulative::new(&starts, &durations, &heights, 2));
+    for (&s, d) in starts.iter().zip(durations) {
+        m.post(Linear::le(&[(s, 1), (end, -1)], -d));
+    }
+    // 3·2 + 2 + 2 + 1 = 11 resource-slots on capacity 2: at least 6, and
+    // the big task can't share, so 3 slots for it and ⌈5/2⌉ = 3 for the rest.
+    for order in [VarOrder::InputOrder, VarOrder::SmallestDomain] {
+        let name = format!("opt_makespan_{order:?}");
+        assert_eq!(
+            optimise_checked(&name, &m, Objective::Minimize(end), order),
+            Some(6)
+        );
+    }
+}
+
 // ---- random models, against brute force ----
 
 /// The number of assignments over `domains` that `ok` accepts.
@@ -721,5 +958,64 @@ proptest! {
         };
         let expected = count(&domains, &|v| constraints.iter().all(|k| holds(v, k)));
         prop_assert_eq!(enumerate_checked("random_lin", &m, order(input_order)), expected);
+    }
+
+    #[test]
+    fn random_min_max_models(
+        domains in domains(2..=4),
+        min: bool,
+        input_order: bool,
+    ) {
+        // The last variable is the result.
+        let mut m = Model::new();
+        let vars = model_vars(&mut m, &domains);
+        let (xs, r) = vars.split_at(vars.len() - 1);
+        m.post(if min { MinMax::min(xs, r[0]) } else { MinMax::max(xs, r[0]) });
+        let expected = count(&domains, &|v| {
+            let (xs, r) = v.split_at(v.len() - 1);
+            let extreme = if min { xs.iter().min() } else { xs.iter().max() };
+            extreme == Some(&r[0])
+        });
+        prop_assert_eq!(enumerate_checked("random_min_max", &m, order(input_order)), expected);
+    }
+
+    #[test]
+    fn random_optimisation(
+        (domains, constraints, target) in domains(1..=4).prop_flat_map(|d| {
+            let n = d.len();
+            let terms = prop::collection::vec((0..n, -3i64..=3), 1..=3);
+            (Just(d), prop::collection::vec((terms, -6i64..=6, any::<bool>()), 1..=2), 0..n)
+        }),
+        maximise: bool,
+        input_order: bool,
+    ) {
+        let mut m = Model::new();
+        let vars = model_vars(&mut m, &domains);
+        for (terms, c, eq) in &constraints {
+            let terms: Vec<(VarId, i64)> = terms.iter().map(|&(i, a)| (vars[i], a)).collect();
+            m.post(if *eq { Linear::eq(&terms, *c) } else { Linear::le(&terms, *c) });
+        }
+        let holds = |v: &[i64], (terms, c, eq): &RandomLinear| {
+            let sum: i64 = terms.iter().map(|&(i, a)| a * v[i]).sum();
+            if *eq { sum == *c } else { sum <= *c }
+        };
+        // The best value of the target over every solution, by brute force.
+        let best_seen: std::cell::Cell<Option<i64>> = std::cell::Cell::new(None);
+        count(&domains, &|v| {
+            let ok = constraints.iter().all(|k| holds(v, k));
+            if ok {
+                let better = |a: i64, b: i64| if maximise { a.max(b) } else { a.min(b) };
+                best_seen.set(Some(best_seen.get().map_or(v[target], |b| better(b, v[target]))));
+            }
+            ok
+        });
+        let expected = best_seen.get();
+        let objective = if maximise {
+            Objective::Maximize(vars[target])
+        } else {
+            Objective::Minimize(vars[target])
+        };
+        let best = optimise_checked("random_opt", &m, objective, order(input_order));
+        prop_assert_eq!(best, expected);
     }
 }

@@ -202,6 +202,9 @@ pub(crate) enum Conclusion {
     Unsatisfiable,
     /// Found every solution: this many (at least one).
     Enumerated(u64),
+    /// Found a best solution, with this value of the objective as the proof
+    /// minimises it.
+    Optimal(i64),
 }
 
 /// Receives everything the proof needs. Every method defaults to doing
