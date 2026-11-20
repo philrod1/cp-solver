@@ -272,11 +272,22 @@ fn a_table_with_no_rows() {
 
 // ---- linear ----
 
+/// The proof for `name` has no unchecked assertions, and some `pol` steps.
+fn fully_checked(name: &str) {
+    let pbp = std::fs::read_to_string(stem(name).with_extension("pbp")).unwrap();
+    assert!(
+        !pbp.lines().any(|l| l.starts_with("a ")),
+        "{name}: unchecked steps"
+    );
+    assert!(
+        pbp.lines().any(|l| l.contains(" pol ")),
+        "{name}: no pol steps"
+    );
+}
+
 #[test]
-fn linear_inferences_are_asserted_for_now() {
-    // x + 2y = 7, x - y <= 1 over 0..=5: (1, 3) and (3, 2). The bounds
-    // reasoning is logged as unchecked assertions until it has `pol`
-    // derivations; everything else is still checked.
+fn linear_inferences_are_checked() {
+    // x + 2y = 7, x - y <= 1 over 0..=5: (1, 3) and (3, 2).
     let mut m = Model::new();
     let (x, y) = (m.int_var_named("x", 0, 5), m.int_var_named("y", 0, 5));
     m.post(Linear::eq(&[(x, 1), (y, 2)], 7));
@@ -285,11 +296,25 @@ fn linear_inferences_are_asserted_for_now() {
         enumerate_checked("linear_small", &m, VarOrder::InputOrder),
         2
     );
-    let pbp = std::fs::read_to_string(stem("linear_small").with_extension("pbp")).unwrap();
-    assert!(
-        pbp.lines().any(|l| l.starts_with("a ")),
-        "expected unchecked steps"
-    );
+    fully_checked("linear_small");
+}
+
+#[test]
+fn linear_bounds_that_jump_several_values() {
+    // 3x + 5y ≤ 17 and x - 2y = 1, with negative values and wide steps:
+    // the cases RUP alone can't justify. Count against brute force.
+    let mut m = Model::new();
+    let (x, y) = (m.int_var_named("x", -6, 9), m.int_var_named("y", -4, 7));
+    m.post(Linear::le(&[(x, 3), (y, 5)], 17));
+    m.post(Linear::eq(&[(x, 1), (y, -2)], 1));
+    let expected = count(&[(-6, 9), (-4, 7)], &|v| {
+        3 * v[0] + 5 * v[1] <= 17 && v[0] - 2 * v[1] == 1
+    });
+    for order in [VarOrder::InputOrder, VarOrder::SmallestDomain] {
+        let name = format!("linear_wide_{order:?}");
+        assert_eq!(enumerate_checked(&name, &m, order), expected);
+        fully_checked(&name);
+    }
 }
 
 // ---- regular ----

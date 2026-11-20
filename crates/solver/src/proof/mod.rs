@@ -28,6 +28,7 @@ pub(crate) enum Justification<'a> {
     /// Follows from the reason by RUP on the constraint's encoding.
     Rup(Reason<'a>),
     /// Not justified yet. VeriPB accepts it with a warning. **Development only**
+    #[allow(dead_code)] // no propagator needs it at the moment
     Unchecked(Reason<'a>),
 }
 
@@ -234,6 +235,12 @@ pub(crate) trait ProofLogger {
 
     /// The atom `x ≥ v`, defined if it isn't yet.
     fn ge_atom(&mut self, _x: VarId, _v: i64) -> GeAtom {
+        unreachable!("only called while logging")
+    }
+
+    /// The least and greatest values `x`'s bits can represent, which may
+    /// go beyond its declared bounds.
+    fn bit_range(&self, _x: VarId) -> (i64, i64) {
         unreachable!("only called while logging")
     }
 

@@ -4,12 +4,14 @@
 //! everything, and `=` is a `≤` plus a `≥`.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use super::{Constraint, PropagationContext, Propagator};
 use crate::domain::Conflict;
 use crate::engine::Engine;
+use crate::lit::Lit;
 use crate::model::VarId;
-use crate::proof::{Ineq, Justification, NotEncodable, OpbEncoder, Reason};
+use crate::proof::{Ineq, Justification, Line, NotEncodable, OpbEncoder, Pol, Reason};
 use crate::store::Event;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -21,11 +23,17 @@ enum Rel {
 /// `Σ aᵢxᵢ ≤ cof` or `Σ aᵢxᵢ = cof`, with terms as `(xᵢ, aᵢ)`, stored
 /// normalised: each variable once, no zero coefficients, and coefficients
 /// with no common factor.
+/// The constraint's name, for citing its rows: shared by the constraint,
+/// which learns it when it writes its encoding, and its propagators. Empty
+/// when no proof is being written.
+type Name = Arc<Mutex<Option<String>>>;
+
 #[derive(Clone, Debug)]
 pub struct Linear {
     terms: Vec<(VarId, i64)>,
     rel: Rel,
     cof: i64,
+    name: Name,
 }
 
 impl Linear {
@@ -68,7 +76,12 @@ impl Linear {
                 t.1 /= g;
             }
         }
-        Self { terms, rel, cof }
+        Self {
+            terms,
+            rel,
+            cof,
+            name: Name::default(),
+        }
     }
 
     /// `0 ≤ -1`, which fails as soon as it is propagated.
@@ -77,16 +90,23 @@ impl Linear {
             terms: Vec::new(),
             rel: Rel::Le,
             cof: -1,
+            name: Name::default(),
         }
     }
 }
 
 impl Constraint for Linear {
     fn post(&self, engine: &mut Engine) {
-        engine.add(Box::new(LessEqual::new(self.terms.clone(), self.cof)));
+        let name = || Arc::clone(&self.name);
+        engine.add(Box::new(LessEqual::new(
+            self.terms.clone(),
+            self.cof,
+            name(),
+            "le",
+        )));
         if self.rel == Rel::Eq {
             let negated = self.terms.iter().map(|&(x, a)| (x, -a)).collect();
-            engine.add(Box::new(LessEqual::new(negated, -self.cof)));
+            engine.add(Box::new(LessEqual::new(negated, -self.cof, name(), "ge")));
         }
     }
 
@@ -104,6 +124,7 @@ impl Constraint for Linear {
         if self.rel == Rel::Eq {
             opb.row("ge", &Ineq::ge(sum, cof));
         }
+        *self.name.lock().unwrap() = Some(opb.constraint_name().to_string());
         Ok(())
     }
 }
@@ -111,21 +132,73 @@ impl Constraint for Linear {
 /// Bounds propagation for `Σ aᵢxᵢ ≤ cof`
 struct LessEqual {
     terms: Vec<(VarId, i64)>,
-    /// The variables of `terms`, for reasons.
-    vars: Vec<VarId>,
     cof: i64,
-    mins: Vec<i128>,
+    /// For each term, the bound that gives its least value: the lower
+    /// bound for a positive coefficient, the upper for a negative one.
+    bounds: Vec<i64>,
+    name: Name,
+    /// The role of the encoding's row this enforces: `le`, or `ge` for the
+    /// second half of an equality.
+    role: &'static str,
 }
 
 impl LessEqual {
-    fn new(terms: Vec<(VarId, i64)>, cof: i64) -> Self {
-        let mins = vec![0; terms.len()];
-        let vars = terms.iter().map(|&(x, _)| x).collect();
+    fn new(terms: Vec<(VarId, i64)>, cof: i64, name: Name, role: &'static str) -> Self {
+        let bounds = vec![0; terms.len()];
         Self {
             terms,
-            vars,
             cof,
-            mins,
+            bounds,
+            name,
+            role,
+        }
+    }
+
+    /// The bounds of every term but `skip`, as a reason.
+    fn reason(&self, skip: Option<usize>) -> Vec<Lit> {
+        (0..self.terms.len())
+            .filter(|&i| Some(i) != skip)
+            .map(|i| match self.terms[i] {
+                (x, a) if a > 0 => Lit::Ge(x, self.bounds[i]),
+                (x, _) => Lit::Lt(x, self.bounds[i] + 1),
+            })
+            .collect()
+    }
+
+    /// Log the row plus, at |aᵢ|, the defining row of each other term's
+    /// bound. Every other term's bits cancel, leaving "these bounds ⇒ a
+    /// bound on term `skip`'s bits", from which the inference is RUP; with
+    /// no `skip`, a row the bounds contradict. A bound the term's bits
+    /// imply anyway (a 0/1 variable at 0) is left out, and its bits with
+    /// it: they can't make the line any weaker than the bound would.
+    fn justify(&self, ctx: &mut PropagationContext<'_>, row: &Line, skip: Option<usize>) {
+        let mut pol = Pol::default();
+        pol.add(row, 1);
+        let mut any_bound = false;
+        for (i, &(x, a)) in self.terms.iter().enumerate() {
+            if Some(i) == skip {
+                continue;
+            }
+            let (least, most) = ctx.proof.bit_range(x);
+            let bound = self.bounds[i];
+            let half = if a > 0 {
+                if bound <= least {
+                    continue;
+                }
+                ctx.proof.ge_atom(x, bound).flag.implies // x ≥ bound ⇒ Σ bits ≥ bound
+            } else {
+                if bound >= most {
+                    continue;
+                }
+                ctx.proof.ge_atom(x, bound + 1).flag.implied_by // x ≤ bound ⇒ Σ bits ≤ bound
+            };
+            pol.add(&half, i128::from(a.unsigned_abs()));
+            any_bound = true;
+        }
+        // With nothing added the pol would only restate the row, which
+        // the RUP can use as it stands.
+        if any_bound {
+            ctx.proof.pol(&pol);
         }
     }
 }
@@ -142,37 +215,63 @@ impl Propagator for LessEqual {
             .collect()
     }
 
+    /// Each term's least value given the others' bounds leaves it some
+    /// slack, which bounds it in turn. Each inference is justified as GCS
+    /// does it: one `pol` (see [`LessEqual::justify`]), then RUP.
     fn propagate(&mut self, ctx: &mut PropagationContext<'_>) -> Result<(), Conflict> {
         // i128 throughout because we can overflow i64
-        let mut min_sum: i128 = 0;
-        for (min, &(x, a)) in self.mins.iter_mut().zip(&self.terms) {
+        let mut least: i128 = 0;
+        for (bound, &(x, a)) in self.bounds.iter_mut().zip(&self.terms) {
             let d = ctx.domain(x);
-            let bound = if a > 0 { d.lower() } else { d.upper() };
-            *min = i128::from(a) * i128::from(bound);
-            min_sum += *min;
+            *bound = if a > 0 { d.lower() } else { d.upper() };
+            least += i128::from(a) * i128::from(*bound);
         }
-        let why = Justification::Unchecked(Reason::Domains(&self.vars));
+        let name = Arc::clone(&self.name);
+        let name = name.lock().unwrap();
+        let row = name
+            .as_deref()
+            .filter(|_| ctx.is_logging())
+            .map(|name| Line::row(name, self.role));
+
         let cof = i128::from(self.cof);
-        if min_sum > cof {
-            return ctx.fail(why);
+        if least > cof {
+            let reason = self.reason(None);
+            if let Some(row) = &row {
+                self.justify(ctx, row, None);
+            }
+            return ctx.fail(Justification::Rup(Reason::Lits(&reason)));
         }
 
-        // Under the direct encoding these need a `pol` derivation (sum the
-        // constraint with the other variables' bounds), not plain RUP.
-        // Unchecked until the proof writer can produce one.
-        for (&min, &(x, a)) in self.mins.iter().zip(&self.terms) {
-            let slack = cof - (min_sum - min); // the most aᵢxᵢ can be
+        // Tightening one term's bound moves the other side of its domain,
+        // so `bounds` stays current throughout.
+        for (j, &(x, a)) in self.terms.iter().enumerate() {
+            let own = i128::from(a) * i128::from(self.bounds[j]);
+            let slack = cof - (least - own); // the most aⱼxⱼ can be
             let a = i128::from(a);
-            if a > 0 {
-                ctx.set_upper(x, clamp(floor_div(slack, a)), why)?;
+            let (tighter, bound) = if a > 0 {
+                let bound = clamp(floor_div(slack, a));
+                (bound < ctx.domain(x).upper(), bound)
             } else {
-                ctx.set_lower(x, clamp(ceil_div(slack, a)), why)?;
+                let bound = clamp(ceil_div(slack, a));
+                (bound > ctx.domain(x).lower(), bound)
+            };
+            if !tighter {
+                continue;
+            }
+            let reason = self.reason(Some(j));
+            if let Some(row) = &row {
+                self.justify(ctx, row, Some(j));
+            }
+            let why = Justification::Rup(Reason::Lits(&reason));
+            if a > 0 {
+                ctx.set_upper(x, bound, why)?;
+            } else {
+                ctx.set_lower(x, bound, why)?;
             }
         }
         Ok(())
     }
 }
-
 /// `⌊n / d⌋`. Rust's `/` rounds toward zero, which is wrong when the
 /// signs differ: -7 / 2 is -3, but ⌊-3.5⌋ = -4.
 fn floor_div(n: i128, d: i128) -> i128 {
