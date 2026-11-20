@@ -128,6 +128,27 @@ fn solving_still_works() {
 }
 
 #[test]
+fn optimisation_prints_each_improvement_then_the_optimum() {
+    let model = "( (version 1) (variables (X 0 3) (Y 0 3))
+      (constraints (_1 lin_equals (1 X 1 Y) 3)) (prob_type (minimize Y)) )";
+    let o = cps(&["-"], model);
+    assert_eq!(o.status.code(), Some(0));
+    let out = stdout(&o);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.last(), Some(&"OPTIMUM 0"), "{out}");
+    assert_eq!(lines[lines.len() - 2], "X=3 Y=0", "{out}");
+}
+
+#[test]
+fn optimisation_without_solutions() {
+    let model = "( (version 1) (variables (X 0 1) (Y 0 1))
+      (constraints (_1 lin_equals (1 X 1 Y) 5)) (prob_type (maximize X)) )";
+    let o = cps(&["-"], model);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(stdout(&o), "UNSATISFIABLE\n");
+}
+
+#[test]
 fn files_are_named_in_reports() {
     let path = std::env::temp_dir().join(format!("cps-cli-{}.scp", std::process::id()));
     std::fs::write(&path, BROKEN).unwrap();

@@ -40,6 +40,7 @@ use std::path::{Path, PathBuf};
 use super::opb::{Atoms, Encoding, eq_definition, write_opb};
 use super::pb::{Ineq, PbLit, write_lit};
 use super::{Conclusion, Flag, GeAtom, Line, Pol, ProofLogger, Rule};
+use crate::Objective;
 use crate::lit::Lit;
 use crate::model::{Model, VarId};
 
@@ -50,6 +51,8 @@ pub(crate) struct VeriPb {
     line: String,
     /// How many labelled lines it has written, for fresh labels.
     labelled: usize,
+    /// Whether there is an objective, so solutions are logged with `soli`.
+    optimising: bool,
     error: Option<io::Error>,
 }
 
@@ -61,9 +64,15 @@ pub(crate) fn with_extension(stem: &Path, ext: &str) -> PathBuf {
 }
 
 impl VeriPb {
-    pub(crate) fn create(model: &Model, stem: &Path) -> io::Result<Self> {
+    /// With an objective, the OPB states it and each solution is logged with
+    /// `soli`, which also requires the next one to be better.
+    pub(crate) fn create(
+        model: &Model,
+        stem: &Path,
+        objective: Option<Objective>,
+    ) -> io::Result<Self> {
         let mut enc = Encoding::new(model);
-        let opb = write_opb(model, &mut enc).map_err(|name| {
+        let opb = write_opb(model, &mut enc, objective).map_err(|name| {
             io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!("constraint '{name}' has no proof encoding"),
@@ -79,6 +88,7 @@ impl VeriPb {
             out,
             line: String::new(),
             labelled: 0,
+            optimising: objective.is_some(),
             error: None,
         };
         proof.adopt_opb_atoms();
@@ -327,7 +337,8 @@ impl ProofLogger for VeriPb {
             .enumerate()
             .map(|(i, &v)| self.atom(Lit::Eq(VarId(i as u32), v)))
             .collect();
-        self.line.push_str("solx");
+        self.line
+            .push_str(if self.optimising { "soli" } else { "solx" });
         for atom in atoms {
             self.line.push(' ');
             write_lit(&self.enc.names, atom, &mut self.line);
@@ -345,11 +356,20 @@ impl ProofLogger for VeriPb {
     fn conclude(&mut self, conclusion: Conclusion) {
         let text = match conclusion {
             Conclusion::Satisfiable => "output NONE ;\nconclusion SAT ;".to_string(),
+            // With an objective, no solutions means no bound: INF either way.
+            Conclusion::Unsatisfiable if self.optimising => {
+                "rup >= 1 ;\noutput NONE ;\nconclusion BOUNDS INF : -1 INF ;".to_string()
+            }
             Conclusion::Unsatisfiable => {
                 "rup >= 1 ;\noutput NONE ;\nconclusion UNSAT : -1 ;".to_string()
             }
             Conclusion::Enumerated(n) => {
                 format!("rup >= 1 ;\noutput NONE ;\nconclusion ENUMERATION_COMPLETE {n} : -1 ;")
+            }
+            // The search ended in a contradiction, so nothing beats `v`, and
+            // the last `soli` was a solution with value `v`.
+            Conclusion::Optimal(v) => {
+                format!("rup >= 1 ;\noutput NONE ;\nconclusion BOUNDS {v} : -1 {v} ;")
             }
         };
         self.emit_text(&text);
@@ -398,7 +418,7 @@ mod tests {
         let x = m.int_var_named("x", -300, 1000);
         let y = m.int_var_named("y", -3, 5);
         let stem = std::env::temp_dir().join(format!("cps-atoms-{}", std::process::id()));
-        let mut p = VeriPb::create(&m, &stem).unwrap();
+        let mut p = VeriPb::create(&m, &stem, None).unwrap();
         let rup = |p: &mut VeriPb, reason: &[Lit], lit: Lit| p.inference(lit, Rule::Rup, reason);
 
         // x ≥ 500 ⇒ x ≥ 300, defining atoms above and then below ...

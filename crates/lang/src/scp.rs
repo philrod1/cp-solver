@@ -26,8 +26,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use solver::{
-    AllDifferent, Automaton, Cell, Constraint, Cumulative, Linear, Model, NotEqual, Regular, Table,
-    VarId,
+    AllDifferent, Automaton, Cell, Constraint, Cumulative, Linear, MinMax, Model, NotEqual,
+    Regular, Table, VarId,
 };
 
 use crate::sexpr::{self, Node, SExpr, SExprError, Span};
@@ -188,6 +188,18 @@ pub const CONSTRAINTS: &[ConstraintKind] = &[
         &["(var ...)"],
         "no two of the variables are equal",
         "(x y z)",
+    ),
+    kind(
+        "array_min",
+        &["(var ...)", "result"],
+        "result is the least of the variables",
+        "(x y) z",
+    ),
+    kind(
+        "array_max",
+        &["(var ...)", "result"],
+        "result is the greatest of the variables",
+        "(x y) z",
     ),
     kind(
         "table",
@@ -509,6 +521,17 @@ impl Reader {
                 let [vars] = args else { return wrong() };
                 let vars = self.var_list(vars, "an all_different variable list")?;
                 self.post(label, AllDifferent::new(&vars))
+            }
+            "array_min" | "array_max" => {
+                let [vars, result] = args else { return wrong() };
+                let vars = self.var_list(vars, "an array_min or array_max variable list")?;
+                let result = self.var(result)?;
+                let constraint = if op == "array_min" {
+                    MinMax::min(&vars, result)
+                } else {
+                    MinMax::max(&vars, result)
+                };
+                self.post(label, constraint)
             }
             "table" => {
                 let [rows, vars] = args else { return wrong() };

@@ -105,7 +105,8 @@ impl DomainStore {
             Lit::Lt(var, val) => self.set_upper(var, val - 1),
         }
     }
-    #[cfg(test)]
+
+    /// How many levels have been pushed and not yet backtracked.
     pub(crate) fn level(&self) -> usize {
         self.trail.level()
     }

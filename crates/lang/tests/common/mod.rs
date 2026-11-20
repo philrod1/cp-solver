@@ -11,7 +11,7 @@ use std::path::Path;
 use std::process::Command;
 
 use lang::{ErrorKind, ProbType, read_scp};
-use solver::Config;
+use solver::{Config, Objective, Outcome};
 
 /// What happened to one document.
 pub enum Run {
@@ -20,8 +20,8 @@ pub enum Run {
     Solutions(u64),
     /// Uses something the reader doesn't support yet, and what.
     Unsupported(String),
-    /// An optimisation problem, which we can't solve yet.
-    Optimisation,
+    /// Optimised: the best value of the objective, if there is a solution.
+    Optimum(Option<i64>),
 }
 
 /// Read and solve one document. A malformed document is an error, because
@@ -39,7 +39,8 @@ fn run_with(text: &str, config: &Config) -> Result<Run, String> {
     let stop_after_first = match scp.prob_type {
         ProbType::Enumerate => false,
         ProbType::Decide => true,
-        ProbType::Minimize(_) | ProbType::Maximize(_) => return Ok(Run::Optimisation),
+        ProbType::Minimize(x) => return optimum(&model, Objective::Minimize(x), config),
+        ProbType::Maximize(x) => return optimum(&model, Objective::Maximize(x), config),
     };
     let count = solver::enumerate(&model, config, |_| {
         if stop_after_first {
@@ -52,10 +53,19 @@ fn run_with(text: &str, config: &Config) -> Result<Run, String> {
     Ok(Run::Solutions(count))
 }
 
+fn optimum(model: &solver::Model, objective: Objective, config: &Config) -> Result<Run, String> {
+    let var = match objective {
+        Objective::Minimize(x) | Objective::Maximize(x) => x,
+    };
+    match solver::optimise(model, objective, config, |_| {}).map_err(|e| e.to_string())? {
+        Outcome::Satisfiable(best) => Ok(Run::Optimum(Some(best.value(var)))),
+        _ => Ok(Run::Optimum(None)),
+    }
+}
+
 /// What happened to a document's proof.
 pub enum Proof {
-    /// Some constraint has no proof encoding yet, or it's an optimisation
-    /// problem.
+    /// Some constraint has no proof encoding yet.
     NotWritten,
     /// VeriPB isn't installed.
     NotChecked,
@@ -72,8 +82,8 @@ pub fn run_with_proof(text: &str, stem: &Path) -> Result<Proof, String> {
         ..Config::default()
     };
     match run_with(text, &config) {
-        Ok(Run::Solutions(_)) => {}
-        Ok(_) => return Ok(Proof::NotWritten),
+        Ok(Run::Solutions(_) | Run::Optimum(_)) => {}
+        Ok(Run::Unsupported(_)) => return Ok(Proof::NotWritten),
         Err(e) if e.contains("no proof encoding") => return Ok(Proof::NotWritten),
         Err(e) => return Err(e),
     }
@@ -123,24 +133,18 @@ pub fn keywords(text: &str) -> Vec<String> {
 pub struct Tally {
     pub passed: u64,
     pub unsupported: BTreeMap<String, u64>,
-    pub optimisation: u64,
     pub skipped_rows: u64,
     pub failures: Vec<String>,
 }
 
 impl Tally {
     pub fn report(&self, what: &str) {
-        let total = self.passed
-            + self.unsupported.values().sum::<u64>()
-            + self.optimisation
-            + self.failures.len() as u64;
+        let total =
+            self.passed + self.unsupported.values().sum::<u64>() + self.failures.len() as u64;
         println!(
             "\n== {what}: {} / {total} documents solved correctly",
             self.passed
         );
-        if self.optimisation > 0 {
-            println!("   {} skipped: optimisation", self.optimisation);
-        }
         if self.skipped_rows > 0 {
             println!(
                 "   {} skipped: incomplete rows in the input",

@@ -18,6 +18,7 @@ use std::fmt::Write;
 
 use super::Flag;
 use super::pb::{Ineq, Names, PbLit};
+use crate::Objective;
 use crate::model::{Model, VarId};
 
 #[derive(Debug)]
@@ -238,8 +239,31 @@ impl OpbEncoder<'_> {
     }
 }
 
-pub(crate) fn write_opb(model: &Model, enc: &mut Encoding) -> Result<String, String> {
+/// The OPB model, and with an objective, the objective first. OPB only
+/// minimises, so a maximisation minimises the negated variable, as
+/// CakePB-CP writes it.
+pub(crate) fn write_opb(
+    model: &Model,
+    enc: &mut Encoding,
+    objective: Option<Objective>,
+) -> Result<String, String> {
     let mut out = String::from("* written by cps\n");
+    if let Some(objective) = objective {
+        let sign = match objective {
+            Objective::Minimize(_) => 1,
+            Objective::Maximize(_) => -1,
+        };
+        let terms: Vec<_> = enc.int(objective.var()).scaled(sign).collect();
+        out.push_str("min:");
+        if terms.is_empty() {
+            out.push_str(" 0"); // a variable with one value, 0, has no bits
+        }
+        for (c, lit) in terms {
+            write!(out, " {c} ").unwrap();
+            super::pb::write_lit(&enc.names, lit, &mut out);
+        }
+        out.push_str(" ;\n");
+    }
     out.push_str("preserved:");
     for int in &enc.ints {
         for &(_, bit) in &int.bits {
@@ -306,7 +330,7 @@ mod tests {
         m.int_var_named("x", -2, 1);
         m.int_var_named("y", 0, 0);
         let mut enc = Encoding::new(&m);
-        let opb = write_opb(&m, &mut enc).unwrap();
+        let opb = write_opb(&m, &mut enc, None).unwrap();
         assert_eq!(
             opb,
             "* written by cps\n\
