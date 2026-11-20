@@ -79,7 +79,12 @@ pub fn run_with_proof(text: &str, stem: &Path) -> Result<Proof, String> {
     }
     let file = |ext: &str| format!("{}.{ext}", stem.display());
     let cmd = std::env::var("VERIPB").unwrap_or_else(|_| "veripb".into());
-    let Ok(out) = Command::new(cmd).arg(file("opb")).arg(file("pbp")).output() else {
+    let Ok(out) = Command::new(cmd)
+        .arg("--force-checked-deletion")
+        .arg(file("opb"))
+        .arg(file("pbp"))
+        .output()
+    else {
         return Ok(Proof::NotChecked);
     };
     let output =

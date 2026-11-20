@@ -43,14 +43,20 @@ fn stem(name: &str) -> PathBuf {
 /// Run VeriPB on `stem.opb` and `stem.pbp`, and return its verdict line,
 /// e.g. `s VERIFIED UNSATISFIABLE`. Panics if the proof doesn't check.
 ///
-/// A proof with unchecked assertions (`a` steps, from linear for now) is
-/// accepted as `s UNDER ASSERTIONS ...`, which is what newer VeriPB says
-/// for one; VeriPB 3.0.2 says `s VERIFIED` with a warning instead. Any other
-/// proof must be `s VERIFIED`.
+/// A proof with unchecked assertions (`a` steps) is accepted as
+/// `s UNDER ASSERTIONS ...`, which is what newer VeriPB says for one;
+/// VeriPB 3.0.2 says `s VERIFIED` with a warning instead. Any other proof
+/// must be `s VERIFIED`. Deletions are checked strictly
+/// (`--force-checked-deletion`), as GCS's chain checks them.
 fn check(stem: &Path) -> Option<String> {
     let cmd = veripb()?;
     let (opb, pbp) = (stem.with_extension("opb"), stem.with_extension("pbp"));
-    let out = Command::new(cmd).arg(&opb).arg(&pbp).output().unwrap();
+    let out = Command::new(cmd)
+        .arg("--force-checked-deletion")
+        .arg(&opb)
+        .arg(&pbp)
+        .output()
+        .unwrap();
     let output =
         String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
     let asserted = std::fs::read_to_string(&pbp)
@@ -287,12 +293,11 @@ fn fully_checked(name: &str) {
         .filter_map(|l| l.split_whitespace().next())
         .collect();
     assert!(!pols.is_empty(), "{name}: no pol steps");
-    let deleted: Vec<&str> = pbp
-        .lines()
-        .filter_map(|l| l.strip_prefix("del id "))
-        .flat_map(|l| l.split_whitespace().filter(|w| w.starts_with('@')))
-        .collect();
-    assert_eq!(pols, deleted, "{name}: each pol line deleted after use");
+    assert_eq!(
+        pols,
+        deleted_labels(&pbp),
+        "{name}: each pol line deleted after use"
+    );
 }
 
 #[test]
@@ -328,6 +333,30 @@ fn linear_bounds_that_jump_several_values() {
 }
 
 // ---- regular ----
+
+/// Every label a `del id` line in `pbp` names, in order.
+fn deleted_labels(pbp: &str) -> Vec<&str> {
+    pbp.lines()
+        .filter_map(|l| l.strip_prefix("del id "))
+        .flat_map(|l| l.split_whitespace().filter(|w| w.starts_with('@')))
+        .collect()
+}
+
+/// The proof for `name` deletes every labelled line it writes: for a
+/// constraint whose labelled lines are all helpers for one propagation.
+fn every_helper_deleted(name: &str) {
+    let pbp = std::fs::read_to_string(stem(name).with_extension("pbp")).unwrap();
+    let mut written: Vec<&str> = pbp
+        .lines()
+        .filter(|l| l.starts_with("@pl"))
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    let mut deleted = deleted_labels(&pbp);
+    assert!(!written.is_empty(), "{name}: no helpers");
+    written.sort_unstable();
+    deleted.sort_unstable();
+    assert_eq!(written, deleted, "{name}: helpers not deleted");
+}
 
 /// `0* 111 0+ 11 0*`: a nonogram row with the clue "3 2".
 fn three_two() -> Automaton {
@@ -383,10 +412,9 @@ fn regular_with_several_states_in_a_layer() {
             .collect();
         m.post_named("r", Regular::new(&x, a.clone())).unwrap();
         let expected = count(&[(0, 2); 4], &|v| a.accepts(v));
-        assert_eq!(
-            enumerate_checked(&format!("regular_helpers_{order:?}"), &m, order),
-            expected
-        );
+        let name = format!("regular_helpers_{order:?}");
+        assert_eq!(enumerate_checked(&name, &m, order), expected);
+        every_helper_deleted(&name);
     }
 }
 
@@ -409,10 +437,9 @@ fn regular_nondeterministic() {
             .map(|i| m.int_var_named(&format!("x{i}"), 0, 1))
             .collect();
         m.post_named("r", Regular::new(&x, a.clone())).unwrap();
-        assert_eq!(
-            enumerate_checked(&format!("regular_nfa_{order:?}"), &m, order),
-            16
-        );
+        let name = format!("regular_nfa_{order:?}");
+        assert_eq!(enumerate_checked(&name, &m, order), 16);
+        every_helper_deleted(&name);
     }
 }
 
@@ -487,6 +514,18 @@ fn cumulative_needs_several_steps() {
     for order in [VarOrder::InputOrder, VarOrder::SmallestDomain] {
         let name = format!("cumulative_steps_{order:?}");
         assert_eq!(enumerate_checked(&name, &m, order), expected);
+        // The pins and steps are deleted once their push is logged; the
+        // recovered capacity rows, which are cited again, are not.
+        let pbp = std::fs::read_to_string(stem(&name).with_extension("pbp")).unwrap();
+        let deleted = deleted_labels(&pbp);
+        assert!(!deleted.is_empty(), "{name}: nothing deleted");
+        for label in deleted {
+            let written = pbp.lines().find(|l| l.starts_with(&format!("{label} ")));
+            assert!(
+                written.is_some_and(|l| l.contains(" rup ")),
+                "{name}: {label} is not a helper"
+            );
+        }
     }
 }
 
