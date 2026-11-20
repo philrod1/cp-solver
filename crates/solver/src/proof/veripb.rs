@@ -273,6 +273,13 @@ impl ProofLogger for VeriPb {
         }
     }
 
+    fn bit_range(&self, x: VarId) -> (i64, i64) {
+        let bits = &self.enc.int(x).bits;
+        let least: i128 = bits.iter().map(|&(c, _)| c.min(0)).sum();
+        let most: i128 = bits.iter().map(|&(c, _)| c.max(0)).sum();
+        (least as i64, most as i64)
+    }
+
     fn rup_line(&mut self, ineq: &Ineq) -> Line {
         let line = self.fresh_line();
         write!(self.line, "@{} ", line.0).unwrap();
