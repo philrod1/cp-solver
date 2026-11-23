@@ -283,6 +283,10 @@ impl ProofLogger for VeriPb {
         }
     }
 
+    fn eq_atom(&mut self, x: VarId, v: i64) -> PbLit {
+        self.eq(x, v)
+    }
+
     fn bit_range(&self, x: VarId) -> (i64, i64) {
         let bits = &self.enc.int(x).bits;
         let least: i128 = bits.iter().map(|&(c, _)| c.min(0)).sum();
