@@ -230,6 +230,62 @@ fn all_different_pigeonhole() {
     }
 }
 
+/// The labelled helper lines `name`'s proof never deletes.
+fn kept_helpers(name: &str) -> Vec<String> {
+    let pbp = std::fs::read_to_string(stem(name).with_extension("pbp")).unwrap();
+    let deleted = deleted_labels(&pbp);
+    pbp.lines()
+        .filter(|l| l.starts_with("@pl"))
+        .filter(|l| !deleted.contains(&l.split_whitespace().next().unwrap()))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn all_different_pigeonhole_fails_at_the_root() {
+    // Six pigeons, five holes: one Hall argument, no search.
+    let mut m = Model::new();
+    let v: Vec<VarId> = (0..6)
+        .map(|i| m.int_var_named(&format!("p{i}"), 1, 5))
+        .collect();
+    m.post_named("holes", AllDifferent::new(&v)).unwrap();
+    assert_eq!(enumerate_checked("ad_php_6", &m, VarOrder::InputOrder), 0);
+    let pbp = std::fs::read_to_string(stem("ad_php_6").with_extension("pbp")).unwrap();
+    assert!(!pbp.lines().any(|l| l.starts_with("a ")));
+    // The failure and the final empty clause; nothing from search.
+    assert_eq!(pbp.lines().filter(|l| l.starts_with("rup ")).count(), 2);
+    // What stays is one "at most one pigeon" line per hole.
+    let kept = kept_helpers("ad_php_6");
+    assert_eq!(kept.len(), 5, "{kept:#?}");
+    assert!(kept.iter().all(|l| l.contains(" pol ")), "{kept:#?}");
+}
+
+#[test]
+fn all_different_violators_during_search() {
+    // z comes first and takes 0, 1 or 2, leaving the three other terms two
+    // values between them: z = 1 leaves {0, 2}, with a hole. Only z = 3
+    // works. The offsets put every term in 0..=2.
+    let mut m = Model::new();
+    let z = m.int_var_named("z", 0, 3);
+    let d = [(0, 2), (-1, 1), (-2, 0)];
+    let y: Vec<(VarId, i64)> = d
+        .iter()
+        .enumerate()
+        .map(|(i, &(lo, hi))| (m.int_var_named(&format!("y{i}"), lo, hi), i as i64))
+        .collect();
+    let terms = [vec![(z, 0)], y].concat();
+    m.post_named("ad", AllDifferent::with_offsets(&terms))
+        .unwrap();
+    for order in [VarOrder::InputOrder, VarOrder::SmallestDomain] {
+        let name = format!("ad_search_{order:?}");
+        assert_eq!(enumerate_checked(&name, &m, order), 6);
+    }
+    // Three Hall arguments, one per value, each kept for the next.
+    let kept = kept_helpers("ad_search_InputOrder");
+    assert_eq!(kept.len(), 3, "{kept:#?}");
+    assert!(kept.iter().all(|l| l.contains(" pol ")), "{kept:#?}");
+}
+
 #[test]
 fn all_different_permutations() {
     let mut m = Model::new();

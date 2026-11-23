@@ -243,6 +243,11 @@ pub(crate) trait ProofLogger {
         unreachable!("only called while logging")
     }
 
+    /// The atom `x = v`, defined if it isn't yet.
+    fn eq_atom(&mut self, _x: VarId, _v: i64) -> PbLit {
+        unreachable!("only called while logging")
+    }
+
     /// The least and greatest values `x`'s bits can represent, which may
     /// go beyond its declared bounds.
     fn bit_range(&self, _x: VarId) -> (i64, i64) {
