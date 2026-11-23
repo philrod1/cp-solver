@@ -928,6 +928,35 @@ proptest! {
     }
 
     #[test]
+    fn random_all_different_except_models(
+        (domains, cliques) in domains(2..=5).prop_flat_map(|d| {
+            let n = d.len();
+            // Repeated variables too: they must take an excluded value.
+            let clique = prop::collection::vec((0..n, -2i64..=2), 2..=4);
+            let excluded = prop::collection::vec(-3i64..=3, 0..=2);
+            (Just(d), prop::collection::vec((clique, excluded), 1..=2))
+        }),
+        input_order: bool,
+    ) {
+        let mut m = Model::new();
+        let vars = model_vars(&mut m, &domains);
+        for (clique, excluded) in &cliques {
+            let terms: Vec<(VarId, i64)> = clique.iter().map(|&(i, a)| (vars[i], a)).collect();
+            m.post(AllDifferent::with_offsets(&terms).except(excluded));
+        }
+        let distinct = |v: &[i64], (clique, excluded): &(Terms, Vec<i64>)| {
+            let values: Vec<i64> = clique
+                .iter()
+                .map(|&(i, a)| v[i] + a)
+                .filter(|u| !excluded.contains(u))
+                .collect();
+            values.iter().enumerate().all(|(k, x)| !values[..k].contains(x))
+        };
+        let expected = count(&domains, &|v| cliques.iter().all(|c| distinct(v, c)));
+        prop_assert_eq!(enumerate_checked("random_ade", &m, order(input_order)), expected);
+    }
+
+    #[test]
     fn random_table_models(
         (domains, tables) in domains(1..=4).prop_flat_map(|d| { let n = d.len(); (Just(d), random_tables(n)) }),
         input_order: bool,

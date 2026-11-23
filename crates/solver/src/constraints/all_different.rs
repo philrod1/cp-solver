@@ -1,9 +1,10 @@
-//! AllDifferent: the terms `xᵢ + aᵢ` take pairwise distinct values.
+//! AllDifferent: the terms `xᵢ + aᵢ` take pairwise distinct values, except
+//! that terms taking an excluded value are free to equal each other.
 //!
 //! The propagator removes a fixed term's value from the others, and keeps
-//! a maximum matching of terms to values. When no matching covers every
-//! term, some k terms share fewer than k values (a Hall violator), and it
-//! fails. The proof of a failure adds up "each of these terms takes one of
+//! a maximum matching of terms to values. A term that can still take an
+//! excluded value needs no match. When no matching covers the rest, some k
+//! terms share fewer than k values (a Hall violator), and it fails. The proof of a failure adds up "each of these terms takes one of
 //! its values" and "at most one term takes each value": see
 //! [`justify_violator`].
 
@@ -22,28 +23,43 @@ use crate::store::Event;
 #[derive(Clone, Debug)]
 pub struct AllDifferent {
     terms: Vec<(VarId, i64)>,
+    excluded: Vec<i64>,
 }
 
 impl AllDifferent {
     pub fn new(terms: &[VarId]) -> Self {
         Self {
             terms: terms.iter().map(|&v| (v, 0)).collect(),
+            excluded: Vec::new(),
         }
     }
 
     pub fn with_offsets(terms: &[(VarId, i64)]) -> Self {
         Self {
             terms: terms.to_vec(),
+            excluded: Vec::new(),
         }
+    }
+
+    /// Exempt terms that take one of `excluded`, as `all_different_except`
+    /// does: e.g. `AllDifferent::new(&vars).except(&[0])`.
+    pub fn except(mut self, excluded: &[i64]) -> Self {
+        self.excluded = excluded.to_vec();
+        self.excluded.sort_unstable();
+        self.excluded.dedup();
+        self
     }
 }
 
 impl Constraint for AllDifferent {
     fn post(&self, engine: &mut Engine) {
         let n = self.terms.len();
-        let repeated = (0..n).any(|j| self.terms[..j].contains(&self.terms[j]));
+        let repeated = (0..n)
+            .filter(|&j| self.terms[..j].contains(&self.terms[j]))
+            .collect();
         engine.add(Box::new(Prop {
             terms: self.terms.clone(),
+            excluded: self.excluded.clone(),
             repeated,
             matched: vec![None; n],
             owner: HashMap::new(),
@@ -58,20 +74,30 @@ impl Constraint for AllDifferent {
     /// @c[name][{i}lt{j}]  !flag => (xi + ai) - (xj + aj) <= -1
     /// @c[name][{i}gt{j}]   flag => (xi + ai) - (xj + aj) >= 1
     /// ```
+    ///
+    /// Each excluded value `s` adds `xi + ai ≠ s` and `xj + aj ≠ s` to both
+    /// rows' conditions, as GCS's AllDifferentExcept does, so either term
+    /// taking `s` lifts both rows.
     fn encode(&self, opb: &mut OpbEncoder<'_>) -> Result<(), NotEncodable> {
         for (i, &(xi, ai)) in self.terms.iter().enumerate() {
             for (j, &(xj, aj)) in self.terms.iter().enumerate().skip(i + 1) {
                 let flag = opb.indexed_flag(&[i, j]);
                 let diff = opb.linear(&[(1, xi), (-1, xj)]);
                 let shift = i128::from(aj) - i128::from(ai);
-                opb.row(
-                    &format!("{i}lt{j}"),
-                    &Ineq::le(diff.clone(), -1 + shift).implied_by(!flag),
-                );
-                opb.row(
-                    &format!("{i}gt{j}"),
-                    &Ineq::ge(diff, 1 + shift).implied_by(flag),
-                );
+                let mut lt = Ineq::le(diff.clone(), -1 + shift).implied_by(!flag);
+                let mut gt = Ineq::ge(diff, 1 + shift).implied_by(flag);
+                for &s in &self.excluded {
+                    for (x, a) in [(xi, ai), (xj, aj)] {
+                        let (lo, hi) = opb.declared(x);
+                        if (lo..=hi).contains(&(s - a)) {
+                            let exempt = opb.eq(x, s - a);
+                            lt = lt.implied_by(!exempt);
+                            gt = gt.implied_by(!exempt);
+                        }
+                    }
+                }
+                opb.row(&format!("{i}lt{j}"), &lt);
+                opb.row(&format!("{i}gt{j}"), &gt);
             }
         }
         Ok(())
@@ -80,8 +106,10 @@ impl Constraint for AllDifferent {
 
 struct Prop {
     terms: Vec<(VarId, i64)>,
-    /// Some term appears twice, so it would have to differ from itself.
-    repeated: bool,
+    /// Sorted.
+    excluded: Vec<i64>,
+    /// Terms that appear earlier too, so must take an excluded value.
+    repeated: Vec<usize>,
     /// The value, offset included, each term is matched to.
     matched: Vec<Option<i64>>,
     /// The term each matched value belongs to.
@@ -110,16 +138,44 @@ impl Propagator for Prop {
     }
 
     fn propagate(&mut self, ctx: &mut PropagationContext<'_>) -> Result<(), Conflict> {
-        // Both of the pair's rows fail, whatever its flag.
-        if self.repeated {
-            return ctx.fail(Justification::Rup(Reason::Lits(&[])));
-        }
+        self.exempt_repeated_terms(ctx)?;
         self.remove_fixed_values(ctx)?;
         self.match_every_term(ctx)
     }
 }
 
 impl Prop {
+    /// A term that appears twice must take an excluded value. Without
+    /// excluded values that's a conflict. Each step is RUP: both of the
+    /// pair's rows fail, whatever its flag.
+    fn exempt_repeated_terms(&self, ctx: &mut PropagationContext<'_>) -> Result<(), Conflict> {
+        if self.excluded.is_empty() && !self.repeated.is_empty() {
+            return ctx.fail(Justification::Rup(Reason::Lits(&[])));
+        }
+        for &i in &self.repeated {
+            let (x, a) = self.terms[i];
+            let doomed: Vec<i64> = ctx
+                .domain(x)
+                .iter()
+                .filter(|v| !self.is_excluded(v + a))
+                .collect();
+            for v in doomed {
+                ctx.remove(x, v, Justification::Rup(Reason::Lits(&[])))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_excluded(&self, u: i64) -> bool {
+        self.excluded.binary_search(&u).is_ok()
+    }
+
+    /// Term `i` can still take an excluded value, so needs no match.
+    fn exempt(&self, ctx: &PropagationContext<'_>, i: usize) -> bool {
+        let (x, a) = self.terms[i];
+        self.excluded.iter().any(|&s| ctx.domain(x).contains(s - a))
+    }
+
     fn remove_fixed_values(&self, ctx: &mut PropagationContext<'_>) -> Result<(), Conflict> {
         // Each removal is "at most one" so justified by RUP.
         for (i, &(xi, ai)) in self.terms.iter().enumerate() {
@@ -127,6 +183,9 @@ impl Prop {
                 continue;
             };
             let value = v + ai;
+            if self.is_excluded(value) {
+                continue;
+            }
             for (j, &(xj, aj)) in self.terms.iter().enumerate() {
                 if j != i {
                     let why = Justification::Rup(Reason::Lits(&[Lit::Eq(xi, v)]));
@@ -138,18 +197,18 @@ impl Prop {
     }
 
     /// Repair the matching after domains have changed, or fail if no
-    /// matching covers every term.
+    /// matching covers every term that can't take an excluded value.
     fn match_every_term(&mut self, ctx: &mut PropagationContext<'_>) -> Result<(), Conflict> {
         for (i, &(x, a)) in self.terms.iter().enumerate() {
             if let Some(u) = self.matched[i]
-                && !ctx.domain(x).contains(u - a)
+                && (!ctx.domain(x).contains(u - a) || self.exempt(ctx, i))
             {
                 self.matched[i] = None;
                 self.owner.remove(&u);
             }
         }
         for i in 0..self.terms.len() {
-            if self.matched[i].is_some() {
+            if self.matched[i].is_some() || self.exempt(ctx, i) {
                 continue;
             }
             let mut visited = Visited {
@@ -406,6 +465,62 @@ mod tests {
         assert_eq!(values(&s, z), [1, 2, 3].into());
     }
 
+    #[test]
+    fn terms_may_share_an_excluded_value() {
+        // Three terms, two values, but 0 is excluded.
+        let mut m = Model::new();
+        let v: Vec<_> = (0..3).map(|_| m.int_var(0, 1)).collect();
+        m.post(AllDifferent::new(&v).except(&[0]));
+        assert_eq!(propagate(&m).1, Ok(()));
+    }
+
+    #[test]
+    fn a_fixed_excluded_value_stays_with_the_others() {
+        let mut m = Model::new();
+        let (x, y) = (m.int_var(0, 0), m.int_var(0, 2));
+        m.post(AllDifferent::new(&[x, y]).except(&[0]));
+        let (s, _) = propagate(&m);
+        assert_eq!(values(&s, y), [0, 1, 2].into());
+    }
+
+    #[test]
+    fn excluded_values_count_after_the_offset() {
+        // x + 1 = 2 is excluded, so y can also be 2.
+        let mut m = Model::new();
+        let (x, y) = (m.int_var(1, 1), m.int_var(1, 3));
+        m.post(AllDifferent::with_offsets(&[(x, 1), (y, 0)]).except(&[2]));
+        let (s, _) = propagate(&m);
+        assert_eq!(values(&s, y), [1, 2, 3].into());
+    }
+
+    #[test]
+    fn a_repeated_term_must_take_an_excluded_value() {
+        let mut m = Model::new();
+        let (x, y) = (m.int_var(-4, 6), m.int_var(0, 2));
+        m.post(AllDifferent::new(&[x, y, x]).except(&[-2, 3]));
+        let (s, r) = propagate(&m);
+        assert_eq!(r, Ok(()));
+        assert_eq!(values(&s, x), [-2, 3].into());
+    }
+
+    #[test]
+    fn a_repeated_term_without_its_excluded_values_conflicts() {
+        let mut m = Model::new();
+        let x = m.int_var(1, 4);
+        m.post(AllDifferent::new(&[x, x]).except(&[0]));
+        assert_eq!(propagate(&m).1, Err(Conflict));
+    }
+
+    #[test]
+    fn terms_that_cant_be_exempt_still_make_a_pigeonhole() {
+        // w could take 0; x, y and z can't, and share {1, 2}.
+        let mut m = Model::new();
+        let w = m.int_var(0, 2);
+        let v: Vec<_> = (0..3).map(|_| m.int_var(1, 2)).collect();
+        m.post(AllDifferent::new(&[w, v[0], v[1], v[2]]).except(&[0]));
+        assert_eq!(propagate(&m).1, Err(Conflict));
+    }
+
     proptest! {
         #[test]
         fn fails_at_root_exactly_when_unsatisfiable(
@@ -413,13 +528,15 @@ mod tests {
                 ((-2i64..=2, 0i64..=2).prop_map(|(lo, w)| (lo, lo + w)), -2i64..=2),
                 2..=5,
             ),
+            excluded in prop::collection::vec(-2i64..=2, 0..=2),
         ) {
-            // Distinct variables, so by Hall's theorem a matching exists
-            // exactly when a solution does.
+            // Distinct variables, so by Hall's theorem a matching of the
+            // terms that can't take an excluded value exists exactly when a
+            // solution does.
             let mut m = Model::new();
             let vars: Vec<(VarId, i64)> =
                 terms.iter().map(|&((lo, hi), a)| (m.int_var(lo, hi), a)).collect();
-            m.post(AllDifferent::with_offsets(&vars));
+            m.post(AllDifferent::with_offsets(&vars).except(&excluded));
             let mut values: Vec<Vec<i64>> = vec![vec![]];
             for &((lo, hi), a) in &terms {
                 values = values
@@ -427,9 +544,11 @@ mod tests {
                     .flat_map(|p| (lo..=hi).map(move |v| [p.clone(), vec![v + a]].concat()))
                     .collect();
             }
-            let satisfiable = values
-                .iter()
-                .any(|p| p.iter().enumerate().all(|(k, u)| !p[..k].contains(u)));
+            let distinct = |p: &Vec<i64>| {
+                let p: Vec<i64> = p.iter().copied().filter(|u| !excluded.contains(u)).collect();
+                p.iter().enumerate().all(|(k, u)| !p[..k].contains(u))
+            };
+            let satisfiable = values.iter().any(distinct);
             prop_assert_eq!(propagate(&m).1.is_ok(), satisfiable);
         }
     }

@@ -190,6 +190,12 @@ pub const CONSTRAINTS: &[ConstraintKind] = &[
         "(x y z)",
     ),
     kind(
+        "all_different_except",
+        &["(var ...)", "(value ...)"],
+        "no two of the variables are equal, unless they take one of the values",
+        "(x y z) (0)",
+    ),
+    kind(
         "array_min",
         &["(var ...)", "result"],
         "result is the least of the variables",
@@ -537,6 +543,17 @@ impl Reader {
                 let [vars] = args else { return wrong() };
                 let vars = self.var_list(vars, "an all_different variable list")?;
                 self.post(label, AllDifferent::new(&vars))
+            }
+            "all_different_except" => {
+                let [vars, excluded] = args else {
+                    return wrong();
+                };
+                let vars = self.var_list(vars, "an all_different_except variable list")?;
+                let excluded: Vec<i64> = list(excluded, "the excluded values")?
+                    .iter()
+                    .map(|e| integer(e, "an excluded value"))
+                    .collect::<Result<_, _>>()?;
+                self.post(label, AllDifferent::new(&vars).except(&excluded))
             }
             "min" | "max" => {
                 // CakePB-CP's binary form: (label max x y result).
@@ -1057,6 +1074,32 @@ mod tests {
                 "enumerate"
             )),
             3
+        );
+        // GCS's all_different_except cases: sat, unsat, and a repeated
+        // variable forced into the excluded values.
+        assert_eq!(
+            count(&doc(
+                "(A 0 2) (B 0 2)",
+                "(_1 all_different_except (A B) (2))",
+                "enumerate"
+            )),
+            7
+        );
+        assert_eq!(
+            count(&doc(
+                "(A 0 2) (B 0 2) (C 0 2) (D 0 2)",
+                "(_1 all_different_except (A B C D) ())",
+                "enumerate"
+            )),
+            0
+        );
+        assert_eq!(
+            count(&doc(
+                "(X -4 6) (Y -4 6) (Z 0 2)",
+                "(_1 all_different_except (X X Y Z Y) (-2 3))",
+                "enumerate"
+            )),
+            12
         );
         // Wildcards: (1 * 3) and (* 2 *) over 1..3 has 11 solutions.
         let v = "(a 1 3) (b 1 3) (c 1 3)";
