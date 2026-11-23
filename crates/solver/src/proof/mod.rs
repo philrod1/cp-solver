@@ -28,6 +28,7 @@ pub(crate) enum Justification<'a> {
     /// Follows from the reason by RUP on the constraint's encoding.
     Rup(Reason<'a>),
     /// Not justified yet. VeriPB accepts it with a warning. **Development only**
+    #[allow(dead_code)] // no propagator needs it at the moment
     Unchecked(Reason<'a>),
 }
 
@@ -201,6 +202,9 @@ pub(crate) enum Conclusion {
     Unsatisfiable,
     /// Found every solution: this many (at least one).
     Enumerated(u64),
+    /// Found a best solution, with this value of the objective as the proof
+    /// minimises it.
+    Optimal(i64),
 }
 
 /// Receives everything the proof needs. Every method defaults to doing
@@ -214,8 +218,10 @@ pub(crate) trait ProofLogger {
 
     /// `reason` implies at least one of `clause`, by RUP. For constraints
     /// whose reasoning involves their own encoding's variables (flags), which
-    /// a [`Lit`] can't name.
-    fn rup(&mut self, _reason: &[Lit], _clause: &[PbLit]) {}
+    /// a [`Lit`] can't name. Returns the line, labelled, if one was written.
+    fn rup(&mut self, _reason: &[Lit], _clause: &[PbLit]) -> Option<Line> {
+        None
+    }
 
     // The rest are for constraints that derive facts about their own
     // encoding with no reason: lines true everywhere, written once and
@@ -237,6 +243,12 @@ pub(crate) trait ProofLogger {
         unreachable!("only called while logging")
     }
 
+    /// The least and greatest values `x`'s bits can represent, which may
+    /// go beyond its declared bounds.
+    fn bit_range(&self, _x: VarId) -> (i64, i64) {
+        unreachable!("only called while logging")
+    }
+
     /// `ineq`, by RUP, as a labelled line.
     fn rup_line(&mut self, _ineq: &Ineq) -> Line {
         unreachable!("only called while logging")
@@ -246,6 +258,10 @@ pub(crate) trait ProofLogger {
     fn pol(&mut self, _pol: &Pol) -> Line {
         unreachable!("only called while logging")
     }
+
+    /// Delete lines nothing will cite again, such as a step's helpers once
+    /// the step is logged, so the checker carries fewer constraints.
+    fn delete(&mut self, _lines: &[Line]) {}
 
     /// A comment in the proof.
     fn comment(&mut self, _text: &str) {}

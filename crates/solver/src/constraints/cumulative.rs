@@ -28,7 +28,7 @@ use crate::domain::Conflict;
 use crate::engine::Engine;
 use crate::lit::Lit;
 use crate::model::VarId;
-use crate::proof::{Flag, Ineq, Justification, NotEncodable, OpbEncoder, Reason};
+use crate::proof::{Flag, Ineq, Justification, Line, NotEncodable, OpbEncoder, Reason};
 use crate::store::Event;
 use recovery::Recovery;
 
@@ -234,7 +234,9 @@ impl Prop {
 
     /// Log what the proof needs before "`reason` ⇒ the tasks running at
     /// `at` overflow" is RUP: the capacity row at `at`, and each task in
-    /// `running` pinned as running there, under `reason`.
+    /// `running` pinned as running there, under `reason`. Returns the pins,
+    /// to delete once the inference is logged; the row stays, for whatever
+    /// cites it next.
     fn log_running(
         &mut self,
         ctx: &mut PropagationContext<'_>,
@@ -242,20 +244,23 @@ impl Prop {
         reason: &[Lit],
         at: i64,
         running: &[usize],
-    ) {
+    ) -> Vec<Line> {
         self.recovery.row(ctx.proof, enc, at);
+        let mut pins = Vec::new();
         for &k in running {
             let flags = self.recovery.per_time(ctx.proof, enc, k, at);
             for flag in [flags.cb, flags.ca, flags.cact] {
-                ctx.rup(reason, &[flag.lit]);
+                pins.extend(ctx.rup(reason, &[flag.lit]));
             }
         }
+        pins
     }
 
     /// Log the proof of a push on task j's start: for each step, the tasks
     /// running at its time, and with more than one step, each step as
     /// "reason ∧ lo ≤ sⱼ ≤ hi ⇒ false". The new bound is then RUP from the
-    /// steps in a chain, or from the one step's pins.
+    /// steps in a chain, or from the one step's pins. Returns every line
+    /// written, to delete once the push is logged.
     fn log_steps(
         &mut self,
         ctx: &mut PropagationContext<'_>,
@@ -263,8 +268,9 @@ impl Prop {
         reason: &[Lit],
         j: usize,
         steps: &[Step<'_>],
-    ) {
+    ) -> Vec<Line> {
         let s = self.tasks[j].start;
+        let mut helpers = Vec::new();
         for step in steps {
             let mut assumed = reason.to_vec();
             // The first and last steps start from a bound the reason has.
@@ -273,12 +279,13 @@ impl Prop {
                     assumed.push(lit);
                 }
             }
-            self.log_running(ctx, enc, reason, step.at, &step.blocker.tasks);
-            self.log_running(ctx, enc, &assumed, step.at, &[j]);
+            helpers.extend(self.log_running(ctx, enc, reason, step.at, &step.blocker.tasks));
+            helpers.extend(self.log_running(ctx, enc, &assumed, step.at, &[j]));
             if steps.len() > 1 {
-                ctx.rup(&assumed, &[]);
+                helpers.extend(ctx.rup(&assumed, &[]));
             }
         }
+        helpers
     }
 }
 
@@ -350,10 +357,13 @@ impl Propagator for Prop {
         if let Some(over) = profile.iter().find(|b| height(&b.tasks) > capacity) {
             let reason = self.reason_for(&bounds, &[over]);
             let (at, running) = (over.from, over.tasks.clone());
-            if let Some(enc) = enc {
-                self.log_running(ctx, enc, &reason, at, &running);
-            }
-            return ctx.fail(Justification::Rup(Reason::Lits(&reason)));
+            let pins = match enc {
+                Some(enc) => self.log_running(ctx, enc, &reason, at, &running),
+                None => Vec::new(),
+            };
+            let result = ctx.fail(Justification::Rup(Reason::Lits(&reason)));
+            ctx.proof.delete(&pins);
+            return result;
         }
 
         for j in 0..self.tasks.len() {
@@ -411,14 +421,19 @@ impl Propagator for Prop {
                 if est > ub {
                     reason.push(Lit::Lt(s, ub + 1));
                 }
-                if let Some(enc) = enc {
-                    self.log_steps(ctx, enc, &reason, j, &steps);
-                }
+                let helpers = match enc {
+                    Some(enc) => self.log_steps(ctx, enc, &reason, j, &steps),
+                    None => Vec::new(),
+                };
                 let why = Justification::Rup(Reason::Lits(&reason));
-                if est > ub {
-                    return ctx.fail(why);
-                }
-                ctx.set_lower(s, est, why)?;
+                let result = if est > ub {
+                    ctx.fail(why)
+                } else {
+                    ctx.set_lower(s, est, why)
+                };
+                // Logged even when it fails, so the helpers have served.
+                ctx.proof.delete(&helpers);
+                result?;
             }
 
             // Latest start, the mirror image: the earliest blocked time a
@@ -449,14 +464,18 @@ impl Propagator for Prop {
                 if lst < lb {
                     reason.push(Lit::Ge(s, lb));
                 }
-                if let Some(enc) = enc {
-                    self.log_steps(ctx, enc, &reason, j, &steps);
-                }
+                let helpers = match enc {
+                    Some(enc) => self.log_steps(ctx, enc, &reason, j, &steps),
+                    None => Vec::new(),
+                };
                 let why = Justification::Rup(Reason::Lits(&reason));
-                if lst < lb {
-                    return ctx.fail(why);
-                }
-                ctx.set_upper(s, lst, why)?;
+                let result = if lst < lb {
+                    ctx.fail(why)
+                } else {
+                    ctx.set_upper(s, lst, why)
+                };
+                ctx.proof.delete(&helpers);
+                result?;
             }
         }
         Ok(())

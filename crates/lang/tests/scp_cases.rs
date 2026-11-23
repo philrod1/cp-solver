@@ -41,12 +41,17 @@ fn gcs_scp_cases() {
         match run(&text) {
             Err(e) => tally.failures.push(format!("{name}: {e}")),
             Ok(Run::Unsupported(op)) => *tally.unsupported.entry(op).or_default() += 1,
-            Ok(Run::Optimisation) => tally.optimisation += 1,
-            Ok(Run::Solutions(n)) => {
-                let wrong =
-                    (name.ends_with("_sat") && n == 0) || (name.ends_with("_unsat") && n > 0);
+            Ok(outcome @ (Run::Solutions(_) | Run::Optimum(_))) => {
+                let wrong = match outcome {
+                    Run::Solutions(n) => {
+                        (name.ends_with("_sat") && n == 0) || (name.ends_with("_unsat") && n > 0)
+                    }
+                    // An `_opt` case has a best solution.
+                    Run::Optimum(best) => name.ends_with("_opt") && best.is_none(),
+                    Run::Unsupported(_) => unreachable!(),
+                };
                 if wrong {
-                    tally.failures.push(format!("{name}: found {n} solutions"));
+                    tally.failures.push(format!("{name}: wrong result"));
                 } else {
                     tally.passed += 1;
                 }

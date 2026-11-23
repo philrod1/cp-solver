@@ -4,10 +4,11 @@
 
 use std::ops::ControlFlow;
 
+use crate::Objective;
 use crate::engine::Engine;
 use crate::lit::Lit;
 use crate::model::{Solution, VarId};
-use crate::proof::ProofLogger;
+use crate::proof::{ProofLogger, Rule};
 use crate::store::DomainStore;
 
 /// Strategy for choosing the next variable to branch on.
@@ -110,6 +111,44 @@ pub(crate) fn search(
                 Ok(None) => break,
                 Err(_conflict) => continue,
             }
+        }
+    }
+}
+
+/// Branch and bound by restarts: search for a solution, then go back to
+/// the root and require the objective to beat it, until nothing does.
+/// Returns the best solution, if there is one; `on_improvement` sees each.
+///
+/// The proof logs each solution with `soli`, which adds "the objective is
+/// better than this" to the proof's database, so the requirement added at
+/// the root follows from it by RUP.
+pub(crate) fn optimise(
+    store: &mut DomainStore,
+    engine: &mut Engine,
+    selector: &mut dyn VariableSelector,
+    proof: &mut dyn ProofLogger,
+    objective: Objective,
+    on_improvement: &mut dyn FnMut(&Solution),
+) -> Option<Solution> {
+    let mut best = None;
+    loop {
+        let SearchEnd::Stopped(solution) = search(store, engine, selector, proof, &mut |_| {
+            ControlFlow::Break(())
+        }) else {
+            return best;
+        };
+        on_improvement(&solution);
+        while store.level() > 0 {
+            store.backtrack();
+        }
+        let better = objective.better_than(solution.value(objective.var()));
+        best = Some(solution);
+        proof.inference(better, Rule::Rup, &[]);
+        match store.apply(better) {
+            Ok(Some(event)) => engine.notify(objective.var(), event),
+            Ok(None) => {}
+            // Nothing at the root is better: the last solution is best.
+            Err(_conflict) => return best,
         }
     }
 }

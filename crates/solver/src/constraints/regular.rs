@@ -36,7 +36,7 @@ use crate::domain::Conflict;
 use crate::engine::Engine;
 use crate::lit::Lit;
 use crate::model::{DuplicateName, Model, VarId};
-use crate::proof::{Ineq, Justification, NotEncodable, OpbEncoder, PbLit, Reason};
+use crate::proof::{Ineq, Justification, Line, NotEncodable, OpbEncoder, PbLit, Reason};
 use crate::store::Event;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -256,18 +256,21 @@ fn marked(layer: &[bool]) -> impl Iterator<Item = usize> + '_ {
 /// Log "reason => not in state t at layer i" for every unreachable state,
 /// from layer 1 on (layer 0 is the `start` row). Each is RUP: assume it,
 /// and its `b` rows rule out every value of xᵢ₋₁, since each one would
-/// need a predecessor that is already ruled out.
+/// need a predecessor that is already ruled out. Returns the lines, which
+/// serve every step of the call.
 fn log_unreachable(
     ctx: &mut PropagationContext<'_>,
     reason: &[Lit],
     flags: &[Vec<PbLit>],
     reach: &[Vec<bool>],
-) {
+) -> Vec<Line> {
+    let mut lines = Vec::new();
     for i in 1..reach.len() {
         for t in (0..reach[i].len()).filter(|&t| !reach[i][t]) {
-            ctx.rup(reason, &[!flags[i][t]]);
+            lines.extend(ctx.rup(reason, &[!flags[i][t]]));
         }
     }
+    lines
 }
 
 /// Log "reason => in some alive state at layer j", for each layer from the
@@ -280,24 +283,30 @@ fn log_unreachable(
 /// alive state at layer j, or not in t at layer j + 1". Each is RUP: assume
 /// the opposite, and every value of xⱼ that leads into t from a reachable
 /// state leads from an alive one, so its `b` row rules it out. The lemma is
-/// then RUP from the helpers and the lemma for layer j + 1.
+/// then RUP from the helpers and the lemma for layer j + 1, after which the
+/// helpers have served and are deleted. Returns the lemmas, which serve
+/// the removals.
 fn log_alive_layers(
     ctx: &mut PropagationContext<'_>,
     reason: &[Lit],
     flags: &[Vec<PbLit>],
     alive: &[Vec<bool>],
     lowest: usize,
-) {
+) -> Vec<Line> {
     let n = alive.len() - 1;
+    let mut lemmas = Vec::new();
     for j in (lowest..n).rev() {
         let some_alive: Vec<PbLit> = marked(&alive[j]).map(|q| flags[j][q]).collect();
+        let mut helpers = Vec::new();
         for t in marked(&alive[j + 1]) {
             let mut clause = some_alive.clone();
             clause.push(!flags[j + 1][t]);
-            ctx.rup(reason, &clause);
+            helpers.extend(ctx.rup(reason, &clause));
         }
-        ctx.rup(reason, &some_alive);
+        lemmas.extend(ctx.rup(reason, &some_alive));
+        ctx.proof.delete(&helpers);
     }
+    lemmas
 }
 
 impl Propagator for Prop {
@@ -383,18 +392,23 @@ impl Propagator for Prop {
         let flags = (ctx.is_logging() && !guard.is_empty()).then_some(guard.as_slice());
         let why = Justification::Rup(Reason::Lits(&reason));
 
+        // Lines that serve every step of this call, deleted once it is done.
+        let mut lines = Vec::new();
         if let Some(flags) = flags {
-            log_unreachable(ctx, &reason, flags, &reach);
+            lines = log_unreachable(ctx, &reason, flags, &reach);
         }
         if dead_end {
             // No accepting state is reachable, so the `accept` row is empty.
-            return ctx.fail(why);
+            let result = ctx.fail(why);
+            ctx.proof.delete(&lines);
+            return result;
         }
         if let Some(flags) = flags {
             let first = unsupported.iter().position(|u| !u.is_empty()).unwrap();
-            log_alive_layers(ctx, &reason, flags, &alive, first + 1);
+            lines.extend(log_alive_layers(ctx, &reason, flags, &alive, first + 1));
         }
-        for (i, (&x, values)) in self.vars.iter().zip(&unsupported).enumerate() {
+        let mut result = Ok(());
+        'removals: for (i, (&x, values)) in self.vars.iter().zip(&unsupported).enumerate() {
             for &v in values {
                 if !ctx.domain(x).contains(v) {
                     continue; // already removed at an earlier position
@@ -402,17 +416,23 @@ impl Propagator for Prop {
                 // Assume xᵢ = v: then no alive state at layer i + 1 is
                 // reachable, one helper each (RUP, as v leads into them only
                 // from unreachable states), and the lemma for layer i + 1
-                // fails.
+                // fails. The helpers serve this removal only.
+                let mut helpers = Vec::new();
                 if let Some(flags) = flags {
                     let assumed = [reason.as_slice(), &[Lit::Eq(x, v)]].concat();
                     for t in marked(&alive[i + 1]) {
-                        ctx.rup(&assumed, &[!flags[i + 1][t]]);
+                        helpers.extend(ctx.rup(&assumed, &[!flags[i + 1][t]]));
                     }
                 }
-                ctx.remove(x, v, why)?;
+                result = ctx.remove(x, v, why);
+                ctx.proof.delete(&helpers);
+                if result.is_err() {
+                    break 'removals;
+                }
             }
         }
-        Ok(())
+        ctx.proof.delete(&lines);
+        result
     }
 }
 

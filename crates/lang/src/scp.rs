@@ -26,8 +26,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use solver::{
-    AllDifferent, Automaton, Cell, Constraint, Cumulative, Linear, Model, NotEqual, Regular, Table,
-    VarId,
+    AllDifferent, Automaton, Cell, Constraint, Cumulative, Linear, MinMax, Model, NotEqual,
+    Regular, Table, VarId,
 };
 
 use crate::sexpr::{self, Node, SExpr, SExprError, Span};
@@ -190,6 +190,30 @@ pub const CONSTRAINTS: &[ConstraintKind] = &[
         "(x y z)",
     ),
     kind(
+        "array_min",
+        &["(var ...)", "result"],
+        "result is the least of the variables",
+        "(x y) z",
+    ),
+    kind(
+        "array_max",
+        &["(var ...)", "result"],
+        "result is the greatest of the variables",
+        "(x y) z",
+    ),
+    kind(
+        "min",
+        &["x", "y", "result"],
+        "result is the lesser of x and y",
+        "x y z",
+    ),
+    kind(
+        "max",
+        &["x", "y", "result"],
+        "result is the greater of x and y",
+        "x y z",
+    ),
+    kind(
         "table",
         &["(row ...)", "(var ...)"],
         "the variables match one of the rows; * in a row matches anything",
@@ -325,6 +349,10 @@ fn check_prob_type(e: &SExpr) -> Result<Objective, ScpError> {
     match &spec.node {
         Node::Atom(a) if a == "decide" => Ok(Objective::Decide),
         Node::Atom(a) if a == "enumerate" => Ok(Objective::Enumerate),
+        Node::Atom(a) if a == "minimize" || a == "maximize" => malformed(
+            spec,
+            format!("an objective is in its own brackets: (prob_type ({a} var))"),
+        ),
         Node::Atom(a) => malformed(spec, format!("unknown prob_type '{a}'")),
         Node::List(parts) => match parts.as_slice() {
             [dir, target]
@@ -509,6 +537,28 @@ impl Reader {
                 let [vars] = args else { return wrong() };
                 let vars = self.var_list(vars, "an all_different variable list")?;
                 self.post(label, AllDifferent::new(&vars))
+            }
+            "min" | "max" => {
+                // CakePB-CP's binary form: (label max x y result).
+                let [x, y, result] = args else { return wrong() };
+                let (x, y, result) = (self.var(x)?, self.var(y)?, self.var(result)?);
+                let constraint = if op == "min" {
+                    MinMax::min(&[x, y], result)
+                } else {
+                    MinMax::max(&[x, y], result)
+                };
+                self.post(label, constraint)
+            }
+            "array_min" | "array_max" => {
+                let [vars, result] = args else { return wrong() };
+                let vars = self.var_list(vars, "an array_min or array_max variable list")?;
+                let result = self.var(result)?;
+                let constraint = if op == "array_min" {
+                    MinMax::min(&vars, result)
+                } else {
+                    MinMax::max(&vars, result)
+                };
+                self.post(label, constraint)
             }
             "table" => {
                 let [rows, vars] = args else { return wrong() };
@@ -879,6 +929,28 @@ mod tests {
             keywords.len(),
             CONSTRAINTS.len(),
             "a keyword is listed twice"
+        );
+    }
+
+    #[test]
+    fn binary_min_and_max() {
+        // (x, y) over 0..=2 with r in 0..=1: 8 pairs have their minimum
+        // in range, 4 their maximum.
+        let v = "(x 0 2) (y 0 2) (r 0 1)";
+        assert_eq!(count(&doc(v, "(c min x y r)", "enumerate")), 8);
+        assert_eq!(count(&doc(v, "(c max x y r)", "enumerate")), 4);
+        // The same as the array forms.
+        assert_eq!(count(&doc(v, "(c array_max (x y) r)", "enumerate")), 4);
+    }
+
+    #[test]
+    fn an_objective_needs_its_own_brackets() {
+        let text = doc("(x 0 1)", "", "minimize");
+        let e = read_scp(&text).unwrap_err();
+        assert_eq!(shown(&text, &e), "minimize");
+        assert_eq!(
+            e.message,
+            "an objective is in its own brackets: (prob_type (minimize var))"
         );
     }
 
