@@ -1,14 +1,17 @@
 //! AllDifferent: the terms `xᵢ + aᵢ` take pairwise distinct values, except
 //! that terms taking an excluded value are free to equal each other.
 //!
-//! The propagator removes a fixed term's value from the others, and keeps
-//! a maximum matching of terms to values. A term that can still take an
-//! excluded value needs no match. When no matching covers the rest, some k
-//! terms share fewer than k values (a Hall violator), and it fails. The proof of a failure adds up "each of these terms takes one of
+//! The propagator achieves generalised arc consistency. It removes a fixed
+//! term's value from the others, and keeps a maximum matching of terms to
+//! values. A term that can still take an excluded value needs no match.
+//! When no matching covers the rest, some k terms share fewer than k values
+//! (a Hall violator), and it fails. Otherwise it removes every value no
+//! such matching uses, each held by k terms with only k values between
+//! them (a Hall set). The proofs add up "each of these terms takes one of
 //! its values" and "at most one term takes each value": see
-//! [`justify_violator`].
+//! [`justify_hall_set`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::{Constraint, PropagationContext, Propagator};
 use crate::domain::Conflict;
@@ -115,7 +118,7 @@ struct Prop {
     /// The term each matched value belongs to.
     owner: HashMap<i64, usize>,
     /// "At most one term takes this value", once the proof has it.
-    at_most_one: HashMap<i64, Line>,
+    at_most_one: HashMap<i64, Option<Line>>,
 }
 
 /// The terms a failed search for an augmenting path visited, and the
@@ -140,7 +143,8 @@ impl Propagator for Prop {
     fn propagate(&mut self, ctx: &mut PropagationContext<'_>) -> Result<(), Conflict> {
         self.exempt_repeated_terms(ctx)?;
         self.remove_fixed_values(ctx)?;
-        self.match_every_term(ctx)
+        self.match_every_term(ctx)?;
+        self.remove_unmatchable_values(ctx)
     }
 }
 
@@ -262,33 +266,237 @@ impl Prop {
         let hall: Vec<usize> = (0..self.terms.len())
             .filter(|&i| visited.terms[i])
             .collect();
-        let mut vars: Vec<VarId> = hall.iter().map(|&i| self.terms[i].0).collect();
-        vars.sort_unstable_by_key(|x| x.index());
-        vars.dedup();
+        let vars = self.vars_of(&hall);
         if !ctx.is_logging() {
             return ctx.fail(Justification::Rup(Reason::Domains(&vars)));
         }
         let mut values: Vec<i64> = visited.values.iter().copied().collect();
         values.sort_unstable();
-        let helpers = justify_violator(ctx, &self.terms, &mut self.at_most_one, &hall, &values);
+        let helpers = justify_hall_set(ctx, &self.terms, &mut self.at_most_one, &hall, &values);
         let result = ctx.fail(Justification::Rup(Reason::Domains(&vars)));
         ctx.proof.delete(&helpers);
         result
     }
+
+    /// Remove every value no matching can give its term (Régin). With the
+    /// matching complete, a value is kept if it is its term's match, if
+    /// it can reach a free value, or if it lies on a cycle with its term.
+    /// Any other value `u` is held by a Hall set: the terms reachable from
+    /// `u` can only take the values reachable from `u`, and there are as
+    /// many of each. One proof per component covers its removals.
+    fn remove_unmatchable_values(
+        &mut self,
+        ctx: &mut PropagationContext<'_>,
+    ) -> Result<(), Conflict> {
+        let graph = Graph::new(&self.terms, &self.matched, ctx);
+        let reaches_free = graph.reaches_free();
+        let component = components(&graph.out);
+        let mut doomed: BTreeMap<usize, Vec<(usize, VarId, i64)>> = BTreeMap::new();
+        for (i, &(x, a)) in self.terms.iter().enumerate() {
+            for v in ctx.domain(x).iter() {
+                let u = v + a;
+                // Values no matched term can take are free.
+                let Some(&node) = graph.node.get(&u) else {
+                    continue;
+                };
+                let kept = self.matched[i] == Some(u)
+                    || reaches_free[node]
+                    || component[i] == component[node];
+                if !kept {
+                    doomed
+                        .entry(component[node])
+                        .or_default()
+                        .push((node, x, v));
+                }
+            }
+        }
+        for removals in doomed.into_values() {
+            let (mut helpers, mut reason) = (Vec::new(), Vec::new());
+            if ctx.is_logging() {
+                let (hall, values) = graph.reach(removals[0].0);
+                // Taken now: the removals may change these domains.
+                reason = ctx.reason_lits(Reason::Domains(&self.vars_of(&hall)));
+                helpers = justify_hall_set(ctx, &self.terms, &mut self.at_most_one, &hall, &values);
+            }
+            for &(_, x, v) in &removals {
+                ctx.remove(x, v, Justification::Rup(Reason::Lits(&reason)))?;
+            }
+            if !helpers.is_empty() {
+                ctx.proof.delete(&helpers);
+            }
+        }
+        Ok(())
+    }
+
+    /// The variables of terms `hall`, each once.
+    fn vars_of(&self, hall: &[usize]) -> Vec<VarId> {
+        let mut vars: Vec<VarId> = hall.iter().map(|&i| self.terms[i].0).collect();
+        vars.sort_unstable_by_key(|x| x.index());
+        vars.dedup();
+        vars
+    }
 }
 
-/// Lines from which the failure on Hall violator `hall` (term indices),
-/// whose terms can only take `values`, follows by RUP from the terms'
-/// domains. Returns the lines to delete once the failure is logged.
+/// The matching as a directed graph. Nodes `0..n` are the terms, and the
+/// rest are values. Each matched term points to the other values it could
+/// take, and each matched value to its term, so a path alternates between
+/// "could take" and "is held by". Exempt terms are left out: they hold
+/// nothing, and nothing needs them.
+struct Graph {
+    terms: usize,
+    values: Vec<i64>,
+    node: HashMap<i64, usize>,
+    out: Vec<Vec<usize>>,
+}
+
+impl Graph {
+    fn new(terms: &[(VarId, i64)], matched: &[Option<i64>], ctx: &PropagationContext<'_>) -> Self {
+        let mut graph = Graph {
+            terms: terms.len(),
+            values: Vec::new(),
+            node: HashMap::new(),
+            out: vec![Vec::new(); terms.len()],
+        };
+        for (i, &(x, a)) in terms.iter().enumerate() {
+            let Some(m) = matched[i] else {
+                continue;
+            };
+            let held = graph.value_node(m);
+            graph.out[held].push(i);
+            for v in ctx.domain(x).iter() {
+                if v + a != m {
+                    let other = graph.value_node(v + a);
+                    graph.out[i].push(other);
+                }
+            }
+        }
+        graph
+    }
+
+    fn value_node(&mut self, u: i64) -> usize {
+        *self.node.entry(u).or_insert_with(|| {
+            self.values.push(u);
+            self.out.push(Vec::new());
+            self.out.len() - 1
+        })
+    }
+
+    /// Whether each node has a path to a value no term holds.
+    fn reaches_free(&self) -> Vec<bool> {
+        let mut into = vec![Vec::new(); self.out.len()];
+        for (from, out) in self.out.iter().enumerate() {
+            for &to in out {
+                into[to].push(from);
+            }
+        }
+        let mut reached = vec![false; self.out.len()];
+        let mut todo: Vec<usize> = (self.terms..self.out.len())
+            .filter(|&u| self.out[u].is_empty())
+            .collect();
+        for &u in &todo {
+            reached[u] = true;
+        }
+        while let Some(to) = todo.pop() {
+            for &from in &into[to] {
+                if !reached[from] {
+                    reached[from] = true;
+                    todo.push(from);
+                }
+            }
+        }
+        reached
+    }
+
+    /// The terms and values reachable from `start`, sorted.
+    fn reach(&self, start: usize) -> (Vec<usize>, Vec<i64>) {
+        let mut seen = vec![false; self.out.len()];
+        seen[start] = true;
+        let mut todo = vec![start];
+        while let Some(from) = todo.pop() {
+            for &to in &self.out[from] {
+                if !seen[to] {
+                    seen[to] = true;
+                    todo.push(to);
+                }
+            }
+        }
+        let terms = (0..self.terms).filter(|&i| seen[i]).collect();
+        let mut values: Vec<i64> = (self.terms..self.out.len())
+            .filter(|&u| seen[u])
+            .map(|u| self.values[u - self.terms])
+            .collect();
+        values.sort_unstable();
+        (terms, values)
+    }
+}
+
+/// The strongly connected component of each node, by Tarjan's algorithm
+/// without recursion.
+fn components(out: &[Vec<usize>]) -> Vec<usize> {
+    const UNSEEN: usize = usize::MAX;
+    let mut index = vec![UNSEEN; out.len()];
+    let mut low = vec![0; out.len()];
+    let mut component = vec![UNSEEN; out.len()];
+    let mut stack = Vec::new();
+    let (mut next, mut count) = (0, 0);
+    for root in 0..out.len() {
+        if index[root] != UNSEEN {
+            continue;
+        }
+        index[root] = next;
+        low[root] = next;
+        next += 1;
+        stack.push(root);
+        // Each call: a node, and how many of its edges it has followed.
+        let mut calls = vec![(root, 0)];
+        while let Some(call) = calls.last_mut() {
+            let v = call.0;
+            if let Some(&w) = out[v].get(call.1) {
+                call.1 += 1;
+                if index[w] == UNSEEN {
+                    index[w] = next;
+                    low[w] = next;
+                    next += 1;
+                    stack.push(w);
+                    calls.push((w, 0));
+                } else if component[w] == UNSEEN {
+                    low[v] = low[v].min(index[w]);
+                }
+                continue;
+            }
+            calls.pop();
+            if let Some(&(parent, _)) = calls.last() {
+                low[parent] = low[parent].min(low[v]);
+            }
+            if low[v] == index[v] {
+                loop {
+                    let w = stack.pop().unwrap();
+                    component[w] = count;
+                    if w == v {
+                        break;
+                    }
+                }
+                count += 1;
+            }
+        }
+    }
+    component
+}
+
+/// Lines from which, with the domains of the terms in `hall` (indices)
+/// whose values are all among `values`, the conclusion follows by RUP.
+/// With more terms than values, that is a failure; with as many, it is
+/// that no other term takes any of `values`. Returns the lines to delete
+/// once the conclusions are logged.
 ///
 /// Adds up, for each Hall term, "it takes some value between its bounds",
 /// and, for each value, "at most one term takes it". The Hall terms'
-/// values cancel, leaving a line that needs at least |hall| − |values| ≥ 1
-/// from values the domains rule out.
-fn justify_violator(
+/// values cancel, leaving a line that needs |hall| − |values| from values
+/// the domains rule out, and from other terms not taking `values`.
+fn justify_hall_set(
     ctx: &mut PropagationContext<'_>,
     terms: &[(VarId, i64)],
-    cache: &mut HashMap<i64, Line>,
+    cache: &mut HashMap<i64, Option<Line>>,
     hall: &[usize],
     values: &[i64],
 ) -> Vec<Line> {
@@ -305,7 +513,9 @@ fn justify_violator(
         let amo = cache
             .entry(u)
             .or_insert_with(|| at_most_one(ctx.proof, terms, u));
-        sum.add(amo, 1);
+        if let Some(amo) = amo {
+            sum.add(amo, 1);
+        }
     }
     helpers.push(ctx.proof.pol(&sum));
     helpers
@@ -325,7 +535,10 @@ fn at_least_one(proof: &mut dyn ProofLogger, x: VarId, lo: i64, hi: i64) -> Line
 /// pair's rows. Then for k = 3, 4, …, the line for the first k terms is
 /// ((k − 2)·(the line for k − 1) + (the pairs with term k)) / (k − 1),
 /// which rounds up to k − 1. Every line but the last is deleted.
-fn at_most_one(proof: &mut dyn ProofLogger, terms: &[(VarId, i64)], u: i64) -> Line {
+///
+/// None if only one term can take `u`. A Hall set needs no line for such a
+/// value: the term's own "takes some value" keeps it.
+fn at_most_one(proof: &mut dyn ProofLogger, terms: &[(VarId, i64)], u: i64) -> Option<Line> {
     let candidates: Vec<(VarId, i64)> = terms
         .iter()
         .copied()
@@ -338,8 +551,9 @@ fn at_most_one(proof: &mut dyn ProofLogger, terms: &[(VarId, i64)], u: i64) -> L
         .iter()
         .map(|&(x, a)| !proof.eq_atom(x, u - a))
         .collect();
-    // A Hall value was tried by one Hall term while another held it.
-    assert!(lits.len() >= 2, "only one term can take {u}");
+    if lits.len() < 2 {
+        return None;
+    }
     let mut helpers = Vec::new();
     let mut line = proof.rup_line(&Ineq::clause([lits[0], lits[1]]));
     for k in 3..=lits.len() as i128 {
@@ -356,11 +570,13 @@ fn at_most_one(proof: &mut dyn ProofLogger, terms: &[(VarId, i64)], u: i64) -> L
         line = proof.pol(&pol);
     }
     proof.delete(&helpers);
-    line
+    Some(line)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use proptest::prelude::*;
 
     use super::AllDifferent;
@@ -455,14 +671,47 @@ mod tests {
     }
 
     #[test]
-    fn a_full_matching_is_not_a_failure() {
+    fn a_hall_set_keeps_its_values_from_the_others() {
+        // x and y need 1 and 2 between them, leaving z only 3.
         let mut m = Model::new();
         let (x, y, z) = (m.int_var(1, 2), m.int_var(1, 2), m.int_var(1, 3));
         m.post(AllDifferent::new(&[x, y, z]));
         let (s, r) = propagate(&m);
         assert_eq!(r, Ok(()));
-        // Step 1 only fails: z = 3 is left to search.
-        assert_eq!(values(&s, z), [1, 2, 3].into());
+        assert_eq!(values(&s, z), [3].into());
+        assert_eq!(values(&s, x), [1, 2].into());
+    }
+
+    #[test]
+    fn values_with_a_way_to_a_free_value_stay() {
+        let mut m = Model::new();
+        let (x, y) = (m.int_var(1, 2), m.int_var(1, 3));
+        m.post(AllDifferent::new(&[x, y]));
+        let (s, _) = propagate(&m);
+        assert_eq!(values(&s, x), [1, 2].into());
+        assert_eq!(values(&s, y), [1, 2, 3].into());
+    }
+
+    #[test]
+    fn nested_hall_sets() {
+        // {x, y} hold {1, 2}; then {x, y, z} hold {1, 2, 3}, so w is 4 or 5.
+        let mut m = Model::new();
+        let (x, y) = (m.int_var(1, 2), m.int_var(1, 2));
+        let (z, w) = (m.int_var(1, 3), m.int_var(1, 5));
+        m.post(AllDifferent::new(&[w, z, x, y]));
+        let (s, _) = propagate(&m);
+        assert_eq!(values(&s, z), [3].into());
+        assert_eq!(values(&s, w), [4, 5].into());
+    }
+
+    #[test]
+    fn a_hall_set_pushes_an_exempt_term_to_its_excluded_value() {
+        let mut m = Model::new();
+        let w = m.int_var(0, 2);
+        let (x, y) = (m.int_var(1, 2), m.int_var(1, 2));
+        m.post(AllDifferent::new(&[w, x, y]).except(&[0]));
+        let (s, _) = propagate(&m);
+        assert_eq!(values(&s, w), [0].into());
     }
 
     #[test]
@@ -523,23 +772,22 @@ mod tests {
 
     proptest! {
         #[test]
-        fn fails_at_root_exactly_when_unsatisfiable(
+        fn root_propagation_leaves_exactly_the_supported_values(
             terms in prop::collection::vec(
-                ((-2i64..=2, 0i64..=2).prop_map(|(lo, w)| (lo, lo + w)), -2i64..=2),
+                ((-2i64..=2, 0i64..=3).prop_map(|(lo, w)| (lo, lo + w)), -2i64..=2),
                 2..=5,
             ),
             excluded in prop::collection::vec(-2i64..=2, 0..=2),
         ) {
-            // Distinct variables, so by Hall's theorem a matching of the
-            // terms that can't take an excluded value exists exactly when a
-            // solution does.
+            // Distinct variables, so GAC leaves each term exactly the values
+            // it takes in some solution, and fails when there are none.
             let mut m = Model::new();
             let vars: Vec<(VarId, i64)> =
                 terms.iter().map(|&((lo, hi), a)| (m.int_var(lo, hi), a)).collect();
             m.post(AllDifferent::with_offsets(&vars).except(&excluded));
-            let mut values: Vec<Vec<i64>> = vec![vec![]];
+            let mut products: Vec<Vec<i64>> = vec![vec![]];
             for &((lo, hi), a) in &terms {
-                values = values
+                products = products
                     .into_iter()
                     .flat_map(|p| (lo..=hi).map(move |v| [p.clone(), vec![v + a]].concat()))
                     .collect();
@@ -548,8 +796,15 @@ mod tests {
                 let p: Vec<i64> = p.iter().copied().filter(|u| !excluded.contains(u)).collect();
                 p.iter().enumerate().all(|(k, u)| !p[..k].contains(u))
             };
-            let satisfiable = values.iter().any(distinct);
-            prop_assert_eq!(propagate(&m).1.is_ok(), satisfiable);
+            let solutions: Vec<&Vec<i64>> = products.iter().filter(|p| distinct(p)).collect();
+            let (s, r) = propagate(&m);
+            prop_assert_eq!(r.is_ok(), !solutions.is_empty());
+            if r.is_ok() {
+                for (k, &(x, a)) in vars.iter().enumerate() {
+                    let supported: BTreeSet<i64> = solutions.iter().map(|p| p[k] - a).collect();
+                    prop_assert_eq!(values(&s, x), supported, "term {}", k);
+                }
+            }
         }
     }
 }

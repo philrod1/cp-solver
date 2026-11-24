@@ -287,6 +287,31 @@ fn all_different_violators_during_search() {
 }
 
 #[test]
+fn all_different_hall_sets_at_the_root() {
+    // {x, y} hold {1, 2}, so z = 3; {x, y, z} hold {1, 2, 3}, so w is 4 or
+    // 5. Search only has to choose x and w.
+    let mut m = Model::new();
+    let w = m.int_var_named("w", 1, 5);
+    let z = m.int_var_named("z", 1, 3);
+    let x = m.int_var_named("x", 1, 2);
+    let y = m.int_var_named("y", 1, 2);
+    m.post_named("ad", AllDifferent::new(&[w, z, x, y]))
+        .unwrap();
+    assert_eq!(
+        enumerate_checked("ad_hall_sets", &m, VarOrder::InputOrder),
+        4
+    );
+    let pbp = std::fs::read_to_string(stem("ad_hall_sets").with_extension("pbp")).unwrap();
+    assert!(!pbp.lines().any(|l| l.starts_with("a ")));
+    // No branch fails: GAC leaves only solutions.
+    assert_eq!(solx_lines("ad_hall_sets"), 4);
+    assert!(
+        pbp.lines().filter(|l| l.contains(" pol ")).count() >= 2,
+        "{pbp}"
+    );
+}
+
+#[test]
 fn all_different_permutations() {
     let mut m = Model::new();
     let v: Vec<VarId> = (0..4)

@@ -133,16 +133,14 @@ fn solves_inkala() {
 
 #[test]
 fn solves_anti_brute_force() {
-    // InputOrder is the case this puzzle was designed to punish; run it with
-    // `cargo test --release -- --ignored` if you want to watch it suffer.
     let grid = solve(ANTI_BRUTE_FORCE, VarOrder::SmallestDomain).expect("has a solution");
     assert!(is_valid_solution(ANTI_BRUTE_FORCE, &grid));
     assert_eq!(to_string(&grid), ANTI_BRUTE_FORCE_SOLUTION);
 }
 
 #[test]
-#[ignore = "slow: naive variable order on a puzzle built to defeat it"]
 fn solves_anti_brute_force_in_input_order() {
+    // The order this puzzle was designed to punish.
     let grid = solve(ANTI_BRUTE_FORCE, VarOrder::InputOrder).expect("has a solution");
     assert_eq!(to_string(&grid), ANTI_BRUTE_FORCE_SOLUTION);
 }

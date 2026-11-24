@@ -102,27 +102,35 @@ impl Constraint for Linear {
             self.terms.clone(),
             self.cof,
             name(),
-            "le",
+            (self.rel == Rel::Eq).then_some("le"),
         )));
         if self.rel == Rel::Eq {
             let negated = self.terms.iter().map(|&(x, a)| (x, -a)).collect();
-            engine.add(Box::new(LessEqual::new(negated, -self.cof, name(), "ge")));
+            engine.add(Box::new(LessEqual::new(
+                negated,
+                -self.cof,
+                name(),
+                Some("ge"),
+            )));
         }
     }
 
-    /// As GCS writes it, in its normalised form:
+    /// As CakePB-CP and GCS write it, in its normalised form:
     ///
     /// ```text
-    /// @c[name][le]  sum ai xi <= cof
-    /// @c[name][ge]  sum ai x1 >= cof   (equalities only)
+    /// @c[name]      sum ai xi <= cof   (an inequality)
+    /// @c[name][le]  sum ai xi <= cof   (an equality, with)
+    /// @c[name][ge]  sum ai xi >= cof
     /// ```
     fn encode(&self, opb: &mut OpbEncoder<'_>) -> Result<(), NotEncodable> {
         let terms: Vec<(i64, VarId)> = self.terms.iter().map(|&(x, a)| (a, x)).collect();
         let sum = opb.linear(&terms);
         let cof = i128::from(self.cof);
-        opb.row("le", &Ineq::le(sum.clone(), cof));
         if self.rel == Rel::Eq {
+            opb.row("le", &Ineq::le(sum.clone(), cof));
             opb.row("ge", &Ineq::ge(sum, cof));
+        } else {
+            opb.whole_row(&Ineq::le(sum, cof));
         }
         *self.name.lock().unwrap() = Some(opb.constraint_name().to_string());
         Ok(())
@@ -137,13 +145,13 @@ struct LessEqual {
     /// bound for a positive coefficient, the upper for a negative one.
     bounds: Vec<i64>,
     name: Name,
-    /// The role of the encoding's row this enforces: `le`, or `ge` for the
-    /// second half of an equality.
-    role: &'static str,
+    /// The role of the encoding's row this enforces: `le` or `ge` for the
+    /// halves of an equality, or none for an inequality's only row.
+    role: Option<&'static str>,
 }
 
 impl LessEqual {
-    fn new(terms: Vec<(VarId, i64)>, cof: i64, name: Name, role: &'static str) -> Self {
+    fn new(terms: Vec<(VarId, i64)>, cof: i64, name: Name, role: Option<&'static str>) -> Self {
         let bounds = vec![0; terms.len()];
         Self {
             terms,
@@ -235,7 +243,10 @@ impl Propagator for LessEqual {
         let row = name
             .as_deref()
             .filter(|_| ctx.is_logging())
-            .map(|name| Line::row(name, self.role));
+            .map(|name| match self.role {
+                Some(role) => Line::row(name, role),
+                None => Line::whole(name),
+            });
 
         let cof = i128::from(self.cof);
         if least > cof {

@@ -88,8 +88,7 @@ pub fn run_with_proof(text: &str, stem: &Path) -> Result<Proof, String> {
         Err(e) => return Err(e),
     }
     let file = |ext: &str| format!("{}.{ext}", stem.display());
-    let cmd = std::env::var("VERIPB").unwrap_or_else(|_| "veripb".into());
-    let Ok(out) = Command::new(cmd)
+    let Ok(out) = Command::new(veripb())
         .arg("--force-checked-deletion")
         .arg(file("opb"))
         .arg(file("pbp"))
@@ -108,6 +107,67 @@ pub fn run_with_proof(text: &str, stem: &Path) -> Result<Proof, String> {
     match output.lines().find(accepted) {
         Some(verdict) => Ok(Proof::Verified(verdict.to_string())),
         None => Err(format!("VeriPB rejected the proof:\n{output}")),
+    }
+}
+
+/// The VeriPB command: `$VERIPB`, or `veripb` on the PATH.
+fn veripb() -> String {
+    std::env::var("VERIPB").unwrap_or_else(|_| "veripb".into())
+}
+
+/// What CakePB-CP made of a proof.
+pub enum Chain {
+    /// CakePB-CP isn't installed.
+    NotChecked,
+    /// CakePB-CP's verdict on the kernel proof, e.g. `s VERIFIED UNSATISFIABLE`.
+    Verified(String),
+}
+
+/// The verified chain, as GCS runs it. CakePB-CP rebuilds the OPB from the
+/// document at `scp`, VeriPB checks `stem.pbp` against that OPB and
+/// elaborates it into a kernel proof, and CakePB-CP checks the kernel
+/// proof. Uses `$CAKE_PB_CP`, or `cake_pb_cp` on the PATH. A step that
+/// fails is an error.
+pub fn cake_chain(scp: &Path, stem: &Path) -> Result<Chain, String> {
+    let file = |ext: &str| format!("{}.{ext}", stem.display());
+    let cake = std::env::var("CAKE_PB_CP").unwrap_or_else(|_| "cake_pb_cp".into());
+    let Ok(encoded) = Command::new(&cake).arg(scp).output() else {
+        return Ok(Chain::NotChecked);
+    };
+    if !encoded.status.success() {
+        return Err(format!(
+            "CakePB-CP couldn't encode the document:\n{}",
+            String::from_utf8_lossy(&encoded.stderr)
+        ));
+    }
+    std::fs::write(file("cake.opb"), &encoded.stdout).map_err(|e| e.to_string())?;
+
+    let elaborated = Command::new(veripb())
+        .arg("--force-checked-deletion")
+        .arg(file("cake.opb"))
+        .arg(file("pbp"))
+        .arg("--elaborate")
+        .arg(file("core.pbp"))
+        .output()
+        .map_err(|e| e.to_string())?;
+    let output = String::from_utf8_lossy(&elaborated.stdout).to_string()
+        + &String::from_utf8_lossy(&elaborated.stderr);
+    if !output.lines().any(|l| l.starts_with("s VERIFIED")) {
+        return Err(format!(
+            "VeriPB rejected the proof against CakePB-CP's OPB:\n{output}"
+        ));
+    }
+
+    let checked = Command::new(&cake)
+        .arg(scp)
+        .arg(file("core.pbp"))
+        .output()
+        .map_err(|e| e.to_string())?;
+    let output = String::from_utf8_lossy(&checked.stdout).to_string()
+        + &String::from_utf8_lossy(&checked.stderr);
+    match output.lines().find(|l| l.starts_with("s VERIFIED")) {
+        Some(verdict) => Ok(Chain::Verified(verdict.to_string())),
+        None => Err(format!("CakePB-CP rejected the kernel proof:\n{output}")),
     }
 }
 
