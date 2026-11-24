@@ -149,6 +149,13 @@ impl OpbEncoder<'_> {
         self.out.push_str(" ;\n");
     }
 
+    /// Write `@c[name] ineq ;`, for a constraint encoded as one row.
+    pub(crate) fn whole_row(&mut self, ineq: &Ineq) {
+        write!(self.out, "@c[{}] ", self.constraint_name).unwrap();
+        ineq.write_to(&self.enc.names, self.out);
+        self.out.push_str(" ;\n");
+    }
+
     /// The atom `x = v`, defined in the OPB the first time it is asked for.
     pub(crate) fn eq(&mut self, x: VarId, v: i64) -> PbLit {
         if let Some(&atom) = self.enc.atoms[x.index()].eq.get(&v) {

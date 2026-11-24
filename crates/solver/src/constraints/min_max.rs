@@ -71,10 +71,11 @@ impl Constraint for MinMax {
         }));
     }
 
-    /// As GCS writes it, for a minimum (a maximum swaps the signs):
+    /// As CakePB-CP and GCS write it, for a minimum (a maximum swaps the
+    /// signs, and its rows are `{i}le`):
     ///
     /// ```text
-    /// @c[name][bound_i]   xᵢ − result ≥ 0           each variable is at least result
+    /// @c[name][{i}ge]     xᵢ − result ≥ 0           each variable is at least result
     /// @x[name][i][r]      x[name][i] ⇒ xᵢ − result ≤ 0
     /// @x[name][i][f]      ¬x[name][i] ⇒ xᵢ − result ≥ 1
     /// @c[name][al1]       Σ x[name][i] ≥ 1           some variable is result
@@ -86,7 +87,7 @@ impl Constraint for MinMax {
         let gap = |opb: &OpbEncoder<'_>, x: VarId| opb.linear(&[(sign, x), (-sign, self.result)]);
         let mut rows = Vec::new();
         for (i, &x) in self.vars.iter().enumerate() {
-            let role = format!("bound_{i}");
+            let role = format!("{i}{}", if self.min { "ge" } else { "le" });
             opb.row(&role, &Ineq::ge(gap(opb, x), 0));
             rows.push(Line::row(opb.constraint_name(), &role));
         }

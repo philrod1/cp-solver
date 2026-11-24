@@ -7,7 +7,9 @@
 //!         cargo test -p lang --test scp_cases -- --nocapture
 //!
 //! Each case whose constraints all have proof encodings is also solved
-//! with a proof, which must pass VeriPB if it is installed.
+//! with a proof, which must pass VeriPB if it is installed. If CakePB-CP
+//! is installed too (`$CAKE_PB_CP`, or `cake_pb_cp` on the PATH), the
+//! proof must also pass the verified chain: see [`common::cake_chain`].
 //!
 //! Without the variable set, the test does nothing.
 
@@ -15,7 +17,11 @@ mod common;
 
 use std::fs;
 
-use common::{Proof, Run, Tally, run, run_with_proof};
+use common::{Chain, Proof, Run, Tally, cake_chain, keywords, run, run_with_proof};
+
+/// Constraints whose encodings aren't yet CakePB-CP's, so their proofs
+/// can't pass its chain.
+const NOT_YET_CAKE: &[&str] = &["regular", "cumulative"];
 
 #[test]
 fn gcs_scp_cases() {
@@ -34,6 +40,8 @@ fn gcs_scp_cases() {
     let proof_dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scp_case_proofs");
     std::fs::create_dir_all(&proof_dir).unwrap();
     let mut verified = Vec::new();
+    let mut cake_verified = Vec::new();
+    let mut not_yet_cake = Vec::new();
     let mut tally = Tally::default();
     for path in &paths {
         let name = path.file_stem().unwrap().to_string_lossy().to_string();
@@ -56,7 +64,35 @@ fn gcs_scp_cases() {
                     tally.passed += 1;
                 }
                 match run_with_proof(&text, &proof_dir.join(&name)) {
-                    Ok(Proof::Verified(verdict)) => verified.push(format!("{name}: {verdict}")),
+                    Ok(Proof::Verified(verdict)) => {
+                        let used = keywords(&text);
+                        if used.iter().any(|k| NOT_YET_CAKE.contains(&k.as_str())) {
+                            not_yet_cake.push(name.clone());
+                        } else {
+                            // CakePB-CP bounds the objective as written;
+                            // VeriPB, on cps's OPB, the one it minimises,
+                            // negated for a maximisation.
+                            let expected = match outcome {
+                                Run::Optimum(Some(best)) => {
+                                    format!("s VERIFIED BOUNDS {best} <= OBJ <= {best}")
+                                }
+                                _ => verdict.clone(),
+                            };
+                            match cake_chain(path, &proof_dir.join(&name)) {
+                                Ok(Chain::Verified(cake))
+                                    if cake.eq_ignore_ascii_case(&expected) =>
+                                {
+                                    cake_verified.push(format!("{name}: {cake}"));
+                                }
+                                Ok(Chain::Verified(cake)) => tally.failures.push(format!(
+                                    "{name}: CakePB-CP says '{cake}', expected '{expected}'"
+                                )),
+                                Ok(Chain::NotChecked) => {}
+                                Err(e) => tally.failures.push(format!("{name}: {e}")),
+                            }
+                        }
+                        verified.push(format!("{name}: {verdict}"));
+                    }
                     Ok(Proof::NotWritten | Proof::NotChecked) => {}
                     Err(e) => tally.failures.push(format!("{name}: {e}")),
                 }
@@ -67,6 +103,19 @@ fn gcs_scp_cases() {
     println!("   {} proofs checked by VeriPB:", verified.len());
     for v in &verified {
         println!("     {v}");
+    }
+    if !cake_verified.is_empty() {
+        println!(
+            "   {} proofs through the CakePB-CP chain:",
+            cake_verified.len()
+        );
+        for v in &cake_verified {
+            println!("     {v}");
+        }
+        println!(
+            "   not yet CakePB-CP's encoding: {}",
+            not_yet_cake.join(" ")
+        );
     }
     assert!(
         tally.failures.is_empty(),

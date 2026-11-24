@@ -74,6 +74,11 @@ impl Line {
     pub(crate) fn row(constraint: &str, role: &str) -> Self {
         Line(format!("c[{constraint}][{role}]"))
     }
+
+    /// The row `@c[name]` of a constraint encoded as one row.
+    pub(crate) fn whole(constraint: &str) -> Self {
+        Line(format!("c[{constraint}]"))
+    }
 }
 
 /// A flag fully reified against an inequality: true exactly when it holds.
